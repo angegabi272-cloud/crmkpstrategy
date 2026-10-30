@@ -1,11 +1,25 @@
-const state = {
-  currentSheet: 'DASHBOARD',
+ currentSheet: 'DASHBOARD',
   data: [], headers: [], filteredData: [], indexedData: [], filteredIndexed: [],
   page: 0, pageSize: 25, editingRow: null, fournisseursData: [],
-  currentUserEmail: "chargement...", isAdmin: false
+  currentUserEmail: "chargement...", isAdmin: false, contactFilter: null, silent: false, verifyIndex: null
 };
 
-const ADMIN_EMAIL = "kpstrategy09@gmail.com"; 
+const ADMIN_EMAIL = "kpstrategy09@gmail.com";
+
+// Résultats possibles d'une vérification de contact (tout résultat sort le contact de « à vérifier »)
+const VERIF_CHOICES = ['À jour', 'À jour (coordonnées modifiées)', 'En négociation', 'Injoignable', 'Coordonnées invalides'];
+function isPendingStatus(v) {
+  const s = (v || '').toString().toLowerCase().trim();
+  return s === '' || /(^|\s)[àa]\s*v[ée]rifier/.test(s);
+}
+const $id = id => document.getElementById(id);
+const esc = s => (s == null ? '' : String(s)).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+function setFieldValue(input, val) {
+  if (input.tagName === 'SELECT' && val && ![...input.options].some(o => o.value === val)) {
+    const o = document.createElement('option'); o.value = val; o.textContent = val; input.appendChild(o);
+  }
+  input.value = val;
+} 
 
 const comparatorState = {
   selections: [null, null, null, null, null],
@@ -15,10 +29,18 @@ const comparatorState = {
 };
 
 let pingInterval = null;
+let refreshTimer = null;
 let chartFournisseursInstance = null;
 let chartProjetsInstance = null;
 
-document.addEventListener('DOMContentLoaded', () => { bindEvents(); });
+document.addEventListener('DOMContentLoaded', () => {
+  bindEvents();
+  sheetsAPI.onSessionExpired = () => { if (confirm('Votre session Google a expiré. Se reconnecter maintenant ?')) location.reload(); };
+  sheetsAPI.preload().catch(e => console.warn('Préchargement Google :', e.message));
+  window.addEventListener('offline', () => $id('offline-banner').classList.remove('hidden'));
+  window.addEventListener('online', () => { $id('offline-banner').classList.add('hidden'); if (state.currentUserEmail.includes('@')) autoRefresh(); });
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
+});
 
 function bindEvents() {
   document.addEventListener('click', (e) => {
@@ -59,6 +81,7 @@ function bindEvents() {
 }
 
 function onRefresh() {
+  sheetsAPI.cache = {};
   if (state.currentSheet === 'DASHBOARD') {
     loadDashboard();
   } else if (state.currentSheet === 'COMPARATEUR') {
@@ -90,9 +113,11 @@ async function login() {
   status.textContent = '';
 
   try {
-    await sheetsAPI.init();
+    if (!sheetsAPI.isReady()) await sheetsAPI.preload();
+    await sheetsAPI.signIn();
+    await sheetsAPI.ensureAllSheets(SCHEMAS);
     try {
-      const res = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo?access_token=${sheetsAPI.token}`);
+      const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: 'Bearer ' + sheetsAPI.token } });
       const data = await res.json();
       if (data && data.email) state.currentUserEmail = data.email;
       else throw new Error("Email absent");
@@ -120,7 +145,9 @@ async function login() {
     await refreshFournisseursCache();
     updatePresence();
     if (pingInterval) clearInterval(pingInterval);
-    pingInterval = setInterval(updatePresence, 15000);
+    pingInterval = setInterval(() => { if (document.visibilityState === 'visible') updatePresence(); }, CONFIG.PRESENCE_MS || 60000);
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(autoRefresh, CONFIG.REFRESH_MS || 60000);
     
     await switchSheet('DASHBOARD');
   } catch (err) { 
@@ -140,59 +167,24 @@ async function logActivity(module, action, details) {
   try {
     const now = new Date();
     const row = [now.toLocaleDateString('fr-FR'), now.toLocaleTimeString('fr-FR'), state.currentUserEmail, module, action, details];
-    await sheetsAPI.appendRow(CONFIG.SHEETS.LOGS, row);
+    await sheetsAPI.appendRow(CONFIG.SHEETS.LOGS, row, { background: true });
   } catch (e) {}
 }
 
 async function updatePresence() {
-  if (!state.currentUserEmail || state.currentUserEmail.includes("inconnu")) return;
-  try {
-    const values = await sheetsAPI.readSheet(CONFIG.SHEETS.PRESENCE);
-    let foundIndex = -1;
-    if (values && values.length > 1) {
-      for (let i = 1; i < values.length; i++) {
-        if (values[i][0] === state.currentUserEmail) { foundIndex = i; break; }
-      }
-    }
-    const nowStr = new Date().toISOString();
-    if (foundIndex !== -1) {
-      await gapi.client.sheets.spreadsheets.values.update({
-        spreadsheetId: CONFIG.SPREADSHEET_ID,
-        range: `${CONFIG.SHEETS.PRESENCE}!A${foundIndex + 1}:B${foundIndex + 1}`,
-        valueInputOption: 'RAW',
-        resource: { values: [[state.currentUserEmail, nowStr]] }
-      });
-    } else {
-      await sheetsAPI.appendRow(CONFIG.SHEETS.PRESENCE, [state.currentUserEmail, nowStr]);
-    }
-  } catch (e) {}
+  if (!state.currentUserEmail || state.currentUserEmail.includes('inconnu')) return;
+  try { await sheetsAPI.ping(state.currentUserEmail); } catch (e) { console.warn('Présence :', e.message); }
 }
 
 async function syncContactToSheet(entreprise, contactName, email, phone, country) {
   if (!entreprise || entreprise.trim() === '') return;
   try {
-    const contacts = await sheetsAPI.readSheet(CONFIG.SHEETS.CONTACTS);
-    let contactExists = false, rowIndex = -1;
-    if (contacts && contacts.length > 1) {
-      for (let i = 1; i < contacts.length; i++) {
-        if ((contacts[i][2] || '').toString().toLowerCase().trim() === entreprise.toLowerCase().trim()) {
-          contactExists = true; rowIndex = i; break;
-        }
-      }
-    }
-    const nowStr = new Date().toISOString().split('T')[0];
-    if (contactExists) {
-      await gapi.client.sheets.spreadsheets.values.update({
-        spreadsheetId: CONFIG.SPREADSHEET_ID,
-        range: `${CONFIG.SHEETS.CONTACTS}!N${rowIndex + 1}`,
-        valueInputOption: 'RAW',
-        resource: { values: [[nowStr]] }
-      });
-    } else {
-      const newRow = [`C-${Date.now()}`, 'Auto-Généré', entreprise, contactName || '', '', '', country || '', '', '', email || '', phone || '', '', 'Synchronisation auto', nowStr, 'À vérifier', 'Normale', '', ''];
-      await sheetsAPI.appendRow(CONFIG.SHEETS.CONTACTS, newRow);
-    }
-  } catch (e) {}
+    const contacts = await sheetsAPI.readSheet(CONFIG.SHEETS.CONTACTS, { fresh: true });
+    const today = new Date().toISOString().split('T')[0];
+    const found = (contacts || []).find((r, i) => i > 0 && (r[2] || '').toString().toLowerCase().trim() === entreprise.toLowerCase().trim());
+    if (found) await sheetsAPI.patchRow(CONFIG.SHEETS.CONTACTS, found, { 'Date dernière vérif': today });
+    else await sheetsAPI.appendRow(CONFIG.SHEETS.CONTACTS, [`C-${Date.now()}`, 'Auto-Généré', entreprise, contactName || '', '', '', country || '', '', '', email || '', phone || '', '', 'Synchronisation auto', today, 'À vérifier', 'Normale', '', '']);
+  } catch (e) { console.warn('Sync contact :', e.message); }
 }
 
 async function refreshFournisseursCache() {
@@ -223,6 +215,7 @@ async function switchSheet(sheetKey) {
   }
 
   state.currentSheet = sheetKey;
+  state.contactFilter = null; updateFilterChip();
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.getAttribute('data-sheet') === sheetKey));
 
   const views = ['dashboard-view', 'table-view', 'comparator-view'];
@@ -257,25 +250,13 @@ function getColIndex(headers, colName) {
 async function loadDashboard() {
   const container = document.getElementById('dashboard-stats');
   if (!container) return;
-  container.innerHTML = '<div class="loading"><i class="fa-solid fa-spinner fa-spin"></i> Analyse des données...</div>';
+  if (!state.silent || !container.children.length) container.innerHTML = '<div class="loading"><i class="fa-solid fa-spinner fa-spin"></i> Analyse des données...</div>';
   
   try {
-    const fetchData = async (sheetName) => {
-      try {
-        if (typeof sheetsAPI.ensureSheet === 'function') {
-          await sheetsAPI.ensureSheet(sheetName, SCHEMAS[sheetName] || []);
-        }
-        const values = await sheetsAPI.readSheet(sheetName);
-        if (!values || values.length < 1) return { headers: [], rows: [] };
-        return { headers: values[0], rows: values.slice(1).filter(r => r.some(c => c)) };
-      } catch (e) { return { headers: [], rows: [] }; }
-    };
-
-    const [dataContacts, dataFournisseurs, dataEpc, dataIngenieurs, dataTradeFin, dataGaranties, dataRelances, dataProjets] = await Promise.all([
-      fetchData(CONFIG.SHEETS.CONTACTS), fetchData(CONFIG.SHEETS.FOURNISSEURS), fetchData(CONFIG.SHEETS.EPC),
-      fetchData(CONFIG.SHEETS.INGENIEURS), fetchData(CONFIG.SHEETS.TRADE_FINANCE), fetchData(CONFIG.SHEETS.GARANTIES),
-      fetchData(CONFIG.SHEETS.RELANCES), fetchData(CONFIG.SHEETS.PROJETS)
-    ]);
+    const S = CONFIG.SHEETS;
+    const toData = v => (!v || v.length < 1) ? { headers: [], rows: [] } : { headers: v[0], rows: v.slice(1).filter(r => r.some(c => c)) };
+    const [dataContacts, dataFournisseurs, dataEpc, dataIngenieurs, dataTradeFin, dataGaranties, dataRelances, dataProjets] =
+      (await sheetsAPI.batchRead([S.CONTACTS, S.FOURNISSEURS, S.EPC, S.INGENIEURS, S.TRADE_FINANCE, S.GARANTIES, S.RELANCES, S.PROJETS])).map(toData);
 
     const countWhere = (data, colName, keyword) => {
       const idx = getColIndex(data.headers, colName);
@@ -283,9 +264,13 @@ async function loadDashboard() {
       return data.rows.filter(r => (r[idx] || '').toString().toLowerCase().includes(keyword.toLowerCase())).length;
     };
 
-    const totalContacts = dataContacts.rows.length;
-    const contactsVerifies = countWhere(dataContacts, 'Statut vérification', 'vérifié') + countWhere(dataContacts, 'Statut vérification', 'valide');
-    const contactsAfficher = totalContacts - contactsVerifies;
+    const idxStatutV = getColIndex(dataContacts.headers, 'Statut vérification');
+    const contactsAll = dataContacts.rows.length;
+    const contactsVerifies = dataContacts.rows.filter(r => !isPendingStatus(r[idxStatutV])).length;
+    const contactsAfficher = contactsAll - contactsVerifies;
+    const totalContacts = contactsAfficher; // diminue à chaque contact vérifié
+    
+    
     const contactsEnNegociation = countWhere(dataContacts, 'Priorité', 'négociation') + countWhere(dataContacts, 'Statut vérification', 'négociation');
     
     const totalProjets = dataProjets.rows.length;
@@ -321,6 +306,13 @@ async function loadDashboard() {
       </div>
     `;
 
+    const createContactCard = (title, val, mode, caption) => `
+      <div class="stat-card" onclick="openContactsFilter('${mode}')">
+        <div class="stat-title">${title}</div>
+        <div class="stat-value">${val}</div>
+        ${caption ? `<div class="stat-caption">${caption}</div>` : ''}
+      </div>`;
+
     const createSubCard = (title, sheetTarget, filterStr, subItems = []) => {
       let subHtml = `<div class="stat-sub-grid">`;
       subItems.forEach(item => { subHtml += `<div class="stat-sub-item"><span class="stat-sub-val ${item.alert ? 'alert' : ''}">${item.val}</span><span>${item.label}</span></div>`; });
@@ -335,7 +327,7 @@ async function loadDashboard() {
     };
 
     container.innerHTML = `
-      ${createCard('Total contacts', totalContacts, 'CONTACTS')}
+      ${createContactCard('Total contacts', totalContacts, 'pending', 'sur ' + contactsAll + ' au total')}
       ${createCard('Fournisseurs', totalFournisseurs, 'FOURNISSEURS')}
       ${createCard('Entreprises EPC', dataEpc.rows.length, 'EPC')}
       ${createCard('Ingénieurs / Experts', dataIngenieurs.rows.length, 'INGENIEURS')}
@@ -345,8 +337,8 @@ async function loadDashboard() {
       ${createCard('Projets', totalProjets, 'PROJETS')}
       ${createCard('Relances en retard', relancesRetard, 'RELANCES', 'retard')}
 
-      ${createCard('Contacts à jour', contactsVerifies, 'CONTACTS', 'vérifié')}
-      ${createCard('Contacts à vérifier', contactsAfficher, 'CONTACTS', 'à vérifier')}
+      ${createContactCard('Contacts à jour', contactsVerifies, 'verified', '')}
+      ${createContactCard('Contacts à vérifier', contactsAfficher, 'pending', '')}
       ${createCard('Contacts en négociation', contactsEnNegociation, 'CONTACTS', 'négociation')}
       ${createCard('Projets en cours', projetsEnCours, 'PROJETS', 'cours')}
 
@@ -424,7 +416,7 @@ window.goToAdd = function(sheetKey) {
 
 async function loadSheet() {
   const sheetName = CONFIG.SHEETS[state.currentSheet];
-  document.getElementById('loading').classList.remove('hidden');
+  if (!state.silent) document.getElementById('loading').classList.remove('hidden');
   document.getElementById('error-box').classList.add('hidden');
 
   try {
@@ -443,7 +435,7 @@ async function loadSheet() {
         if (row.some(c => c)) { state.data.push(row); state.indexedData.push({ row, sourceIndex: srcIdx }); }
       });
     }
-    state.page = 0; applyFilter();
+    const kp = state.silent ? state.page : 0; applyFilter(); state.page = Math.min(kp, Math.max(0, Math.ceil(state.filteredIndexed.length / state.pageSize) - 1)); render();
   } catch (err) {
     document.getElementById('error-box').textContent = 'Erreur de chargement : ' + err.message;
     document.getElementById('error-box').classList.remove('hidden');
@@ -452,7 +444,7 @@ async function loadSheet() {
 
 async function loadRelancesView() {
   const sheetName = CONFIG.SHEETS.RELANCES;
-  document.getElementById('loading').classList.remove('hidden');
+  if (!state.silent) document.getElementById('loading').classList.remove('hidden');
   try {
     if (typeof sheetsAPI.ensureSheet === 'function') {
       await sheetsAPI.ensureSheet(sheetName, SCHEMAS['RELANCES'] || []);
@@ -469,7 +461,7 @@ async function loadRelancesView() {
     if (idxDate !== -1) {
       state.indexedData.sort((a, b) => (new Date(a.row[idxDate] || 0).getTime() || 0) - (new Date(b.row[idxDate] || 0).getTime() || 0));
     }
-    state.page = 0; applyFilter();
+    const kp = state.silent ? state.page : 0; applyFilter(); state.page = Math.min(kp, Math.max(0, Math.ceil(state.filteredIndexed.length / state.pageSize) - 1)); render();
   } catch (err) {
     document.getElementById('error-box').textContent = 'Erreur : ' + err.message;
     document.getElementById('error-box').classList.remove('hidden');
@@ -478,7 +470,12 @@ async function loadRelancesView() {
 
 function applyFilter() {
   const q = document.getElementById('search-input').value.toLowerCase().trim();
-  state.filteredIndexed = !q ? [...state.indexedData] : state.indexedData.filter(item => item.row.some(cell => (cell || '').toString().toLowerCase().includes(q)));
+  let base = state.indexedData;
+  if (state.currentSheet === 'CONTACTS' && state.contactFilter) {
+    const iS = getColIndex(state.headers, 'Statut vérification');
+    base = base.filter(it => isPendingStatus(it.row[iS]) === (state.contactFilter === 'pending'));
+  }
+  state.filteredIndexed = !q ? [...base] : base.filter(item => item.row.some(cell => (cell || '').toString().toLowerCase().includes(q)));
   state.filteredData = state.filteredIndexed.map(item => item.row);
   state.page = 0; render();
 }
@@ -512,19 +509,20 @@ function renderTable() {
       let cellValue = row[colIdx] || '';
       if (header.toLowerCase().includes('statut') || header.toLowerCase().includes('priorité')) {
         const lowerVal = cellValue.toLowerCase();
-        if (lowerVal.includes('retard') || lowerVal.includes('haute') || lowerVal.includes('urgent')) td.classList.add('status-retard');
-        else if (lowerVal.includes('terminé') || lowerVal.includes('fait') || lowerVal.includes('validé')) td.classList.add('status-valide');
-        else if (lowerVal.includes('attente') || lowerVal.includes('moyenne')) td.classList.add('status-attente');
+        if (lowerVal.includes('retard') || lowerVal.includes('haute') || lowerVal.includes('urgent') || lowerVal.includes('injoignable') || lowerVal.includes('invalide')) td.classList.add('status-retard');
+        else if (lowerVal.includes('terminé') || lowerVal.includes('fait') || lowerVal.includes('validé') || lowerVal.includes('à jour') || lowerVal.includes('vérifié')) td.classList.add('status-valide');
+        else if (lowerVal.includes('attente') || lowerVal.includes('moyenne') || lowerVal.includes('à vérifier') || lowerVal.includes('négociation')) td.classList.add('status-attente');
       }
       td.textContent = cellValue; tr.appendChild(td);
     });
 
     const tdActions = document.createElement('td'); tdActions.className = 'actions-cell';
-    tdActions.innerHTML = `<button class="edit-btn" title="Modifier" data-index="${sourceIndex}"><i class="fa-solid fa-pen-to-square"></i></button><button class="delete-btn" title="Supprimer" data-index="${sourceIndex}"><i class="fa-solid fa-trash"></i></button>`;
+    tdActions.innerHTML = (state.currentSheet === 'CONTACTS' ? `<button class="verify-btn" title="Vérifier ce contact" data-index="${sourceIndex}"><i class="fa-solid fa-circle-check"></i></button>` : '') + `<button class="edit-btn" title="Modifier" data-index="${sourceIndex}"><i class="fa-solid fa-pen-to-square"></i></button><button class="delete-btn" title="Supprimer" data-index="${sourceIndex}"><i class="fa-solid fa-trash"></i></button>`;
     tr.appendChild(tdActions); tbody.appendChild(tr);
   });
 
   tbody.querySelectorAll('.edit-btn').forEach(btn => btn.addEventListener('click', () => openModal(parseInt(btn.dataset.index))));
+  tbody.querySelectorAll('.verify-btn').forEach(btn => btn.addEventListener('click', () => openVerifyModal(parseInt(btn.dataset.index))));
   tbody.querySelectorAll('.delete-btn').forEach(btn => btn.addEventListener('click', () => onDelete(parseInt(btn.dataset.index))));
 }
 
@@ -558,11 +556,13 @@ function openModal(sourceIndex) {
     const label = document.createElement('label'); label.textContent = header; label.htmlFor = `field-${idx}`;
     
     let input;
-    if (header === 'Catégorie' || header === 'Type' || header === 'Type acteur' || header === 'Statut' || header === 'Priorité' || header === 'Type garantie' || header === 'Type organisme') {
+    if (header === 'Statut vérification' || header === 'Catégorie' || header === 'Type' || header === 'Type acteur' || header === 'Statut' || header === 'Priorité' || header === 'Type garantie' || header === 'Type organisme') {
       input = document.createElement('select');
       input.innerHTML = `<option value="">-- Choisir --</option>`;
       const options = header === 'Catégorie' 
         ? ['Soja', 'Blé', 'Maïs', 'Riz', 'Câble', 'Machines', 'Maintenance', 'OM', 'Autre']
+        : header === 'Statut vérification'
+        ? ['À vérifier', ...VERIF_CHOICES]
         : header === 'Type acteur'
         ? ['Fournisseur', 'Partenaire Financier', 'EPC', 'Ingénieur', 'Organisme de Garantie', 'Client']
         : header === 'Statut' || header === 'Priorité'
@@ -582,11 +582,13 @@ function openModal(sourceIndex) {
         input.value = generateAutoId(idPrefix);
       } else {
         const item = state.indexedData.find(it => it.sourceIndex === sourceIndex);
-        if (item) input.value = item.row[idx] || '';
+        if (item) setFieldValue(input, item.row[idx] || '');
       }
+    } else if (sourceIndex === null && header === 'Statut vérification') {
+      input.value = 'À vérifier';
     } else if (sourceIndex !== null) {
       const item = state.indexedData.find(it => it.sourceIndex === sourceIndex);
-      if (item) input.value = item.row[idx] || '';
+      if (item) setFieldValue(input, item.row[idx] || '');
     }
     
     group.appendChild(label); group.appendChild(input); fields.appendChild(group);
@@ -613,6 +615,12 @@ async function onSave(e) {
   
   const sheetName = CONFIG.SHEETS[state.currentSheet];
   const actionType = state.editingRow === null ? 'Ajout' : 'Modification';
+  const prevItem = state.editingRow === null ? null : state.indexedData.find(it => it.sourceIndex === state.editingRow);
+  if (state.currentSheet === 'CONTACTS') {
+    const iS = getColIndex(state.headers, 'Statut vérification'), iD = getColIndex(state.headers, 'Date dernière vérif');
+    const wasPending = !prevItem || isPendingStatus(prevItem.row[iS]);
+    if (iS >= 0 && iD >= 0 && wasPending && !isPendingStatus(values[iS])) values[iD] = new Date().toISOString().slice(0, 10);
+  }
   
   const saveBtn = document.getElementById('save-btn');
   const originalText = saveBtn.innerHTML;
@@ -625,9 +633,13 @@ async function onSave(e) {
     } else {
       const item = state.indexedData.find(it => it.sourceIndex === state.editingRow);
       if (!item) throw new Error('Ligne introuvable');
-      item.row = values;
-      const allRows = [state.headers, ...state.data];
-      await sheetsAPI.writeSheet(sheetName, allRows);
+      try {
+        await sheetsAPI.updateRow(sheetName, item.row, values);
+      } catch (e) {
+        if (e.code !== 'ROW_CONFLICT') throw e;
+        if (!confirm('Cette ligne vient d’être modifiée par un autre utilisateur.\nÉcraser ses modifications avec les vôtres ?')) { const c = new Error('annulé'); c.code = 'CANCEL'; throw c; }
+        await sheetsAPI.updateRow(sheetName, item.row, values, { force: true });
+      }
     }
     
     closeModal();
@@ -648,7 +660,9 @@ async function onSave(e) {
     }, 1500);
 
   } catch (err) {
+    if (err.code === 'CANCEL') return;
     console.error(err);
+    if (err.code === 'ROW_NOT_FOUND' || err.code === 'ROW_CONFLICT') { closeModal(); reloadCurrent(); }
     alert('Erreur d\'enregistrement :\n' + (err.result?.error?.message || err.message));
   } finally {
     saveBtn.innerHTML = originalText;
@@ -662,7 +676,8 @@ async function onDelete(sourceIndex) {
   try {
     const item = state.indexedData.find(it => it.sourceIndex === sourceIndex);
     const itemName = item ? (item.row[1] || item.row[0] || 'Inconnu') : 'Inconnu';
-    await sheetsAPI.deleteRow(sheetName, sourceIndex + 1);
+    if (!item) throw new Error('Ligne introuvable');
+    await sheetsAPI.deleteRowByMatch(sheetName, item.row);
     showToast('🗑️ Entrée supprimée', 'success');
     await logActivity(state.currentSheet, 'Suppression', itemName);
     if (state.currentSheet === 'FOURNISSEURS') await refreshFournisseursCache();
@@ -677,47 +692,110 @@ function showToast(msg, type = 'success') {
   toast.classList.remove('hidden'); setTimeout(() => toast.classList.add('hidden'), 3000);
 }
 
-function openReportModal() {
-  document.getElementById('report-modal').classList.remove('hidden');
+function reloadCurrent() {
+  if (state.currentSheet === 'DASHBOARD') return loadDashboard();
+  if (state.currentSheet === 'RELANCES') return loadRelancesView();
+  if (state.currentSheet === 'COMPARATEUR') return refreshFournisseursCache().then(initComparator);
+  return loadSheet();
+}
+
+async function autoRefresh() {
+  if (document.visibilityState !== 'visible' || !navigator.onLine) return;
+  if (state.currentSheet === 'COMPARATEUR') return;
+  if (!$id('modal').classList.contains('hidden') || !$id('verify-modal').classList.contains('hidden')) return;
+  state.silent = true;
+  try { await reloadCurrent(); } catch (e) { console.warn('Actualisation :', e.message); } finally { state.silent = false; }
+}
+
+/* ---------- Filtres contacts (cartes du tableau de bord) ---------- */
+function updateFilterChip() {
+  const chip = $id('filter-chip'); if (!chip) return;
+  chip.classList.toggle('hidden', !state.contactFilter);
+  const s = chip.querySelector('span');
+  if (s) s.textContent = state.contactFilter === 'verified' ? 'Contacts à jour' : 'Contacts à vérifier';
+}
+window.openContactsFilter = async function (mode) { await switchSheet('CONTACTS'); state.contactFilter = mode; updateFilterChip(); applyFilter(); };
+window.clearContactFilter = function () { state.contactFilter = null; updateFilterChip(); applyFilter(); };
+
+/* ---------- Vérification d'un contact ---------- */
+function openVerifyModal(sourceIndex) {
+  const item = state.indexedData.find(it => it.sourceIndex === sourceIndex);
+  if (!item) return;
+  state.verifyIndex = sourceIndex;
+  $id('verify-name').textContent = item.row[2] || item.row[3] || item.row[0] || 'Contact';
+  $id('verify-choice').innerHTML = '<option value="">-- Choisir un résultat --</option>' + VERIF_CHOICES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  $id('verify-note').value = '';
+  $id('verify-modal').classList.remove('hidden');
+}
+function closeVerifyModal() { $id('verify-modal').classList.add('hidden'); state.verifyIndex = null; }
+
+async function confirmVerify() {
+  const item = state.indexedData.find(it => it.sourceIndex === state.verifyIndex);
+  if (!item) return closeVerifyModal();
+  const choice = $id('verify-choice').value;
+  if (!choice) { showToast('Choisissez un résultat de vérification', 'error'); return; }
+  const note = $id('verify-note').value.trim();
+  const today = new Date().toISOString().slice(0, 10);
+  const name = item.row[2] || item.row[3] || item.row[0] || '';
+  const btn = $id('verify-confirm-btn'); btn.disabled = true;
+  try {
+    const changes = { 'Statut vérification': choice, 'Date dernière vérif': today };
+    if (note) changes['Historique échanges'] = cur => (cur ? cur + ' | ' : '') + `${today} (${state.currentUserEmail}) : ${note}`;
+    await sheetsAPI.patchRow(CONFIG.SHEETS.CONTACTS, item.row, changes);
+    closeVerifyModal();
+    showToast('✅ Contact vérifié : il passe dans « Contacts à jour »', 'success');
+    logActivity('CONTACTS', 'Vérification', `${name} → ${choice}`);
+    await loadSheet();
+  } catch (e) {
+    showToast('❌ ' + e.message, 'error');
+    if (e.code === 'ROW_NOT_FOUND') { closeVerifyModal(); loadSheet(); }
+  } finally { btn.disabled = false; }
+}
+
+/* ---------- Rapport PDF (texte noir, tableau turquoise / gris / blanc, logo) ---------- */
+function openReportModal() { $id('report-modal').classList.remove('hidden'); }
+
+async function loadLogoDataUrl() {
+  try {
+    const blob = await (await fetch('logo.png')).blob();
+    return await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => res(''); r.readAsDataURL(blob); });
+  } catch (e) { return ''; }
 }
 
 async function generatePDF() {
-  const btn = document.getElementById('btn-generate-pdf');
+  const btn = $id('btn-generate-pdf');
   const originalText = btn.innerHTML;
   btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Génération...';
   btn.disabled = true;
 
-  const module = document.getElementById('report-module').value;
-  const dateStart = document.getElementById('report-date-start').value;
-  const dateEnd = document.getElementById('report-date-end').value;
+  const module = $id('report-module').value;
+  const dateStart = $id('report-date-start').value;
+  const dateEnd = $id('report-date-end').value;
 
   try {
-    let dataToPrint = [];
-    let headersToPrint = [];
+    let headersToPrint = [], dataToPrint = [];
 
     if (module === 'DASHBOARD') {
-      const getRows = async (sheetName) => {
-        const values = await sheetsAPI.readSheet(sheetName);
-        return (values && values.length > 1) ? values.slice(1).filter(r => r.some(c => c)) : [];
-      };
-      const contacts = await getRows(CONFIG.SHEETS.CONTACTS);
-      const fournisseurs = await getRows(CONFIG.SHEETS.FOURNISSEURS);
-      const projets = await getRows(CONFIG.SHEETS.PROJETS);
-      
+      const S = CONFIG.SHEETS;
+      const [cRaw, fRaw, pRaw] = await sheetsAPI.batchRead([S.CONTACTS, S.FOURNISSEURS, S.PROJETS], { fresh: true });
+      const rows = v => (v && v.length > 1) ? v.slice(1).filter(r => r.some(x => x)) : [];
+      const c = rows(cRaw), f = rows(fRaw), p = rows(pRaw);
+      const iS = getColIndex((cRaw && cRaw[0]) || [], 'Statut vérification');
+      const aJour = c.filter(r => !isPendingStatus(r[iS])).length;
       headersToPrint = ['Indicateur', 'Valeur'];
       dataToPrint = [
-        ['Total Contacts', contacts.length],
-        ['Total Fournisseurs', fournisseurs.length],
-        ['Total Projets', projets.length],
+        ['Total contacts (restant à vérifier)', c.length - aJour],
+        ['Contacts à jour', aJour],
+        ['Contacts au total', c.length],
+        ['Total fournisseurs', f.length],
+        ['Total projets', p.length],
         ['Date du rapport', new Date().toLocaleDateString('fr-FR')]
       ];
     } else {
-      const values = await sheetsAPI.readSheet(CONFIG.SHEETS[module]);
-      if (!values || values.length === 0) throw new Error("Aucune donnée à exporter.");
-      
+      const values = await sheetsAPI.readSheet(CONFIG.SHEETS[module], { fresh: true });
+      if (!values || values.length === 0) throw new Error('Aucune donnée à exporter.');
       headersToPrint = values[0];
       let rows = values.slice(1).filter(r => r.some(c => c));
-      
       if (dateStart || dateEnd) {
         rows = rows.filter(row => {
           let dateRow = null;
@@ -733,40 +811,48 @@ async function generatePDF() {
       dataToPrint = rows;
     }
 
-    const printDiv = document.createElement('div');
-    printDiv.style.padding = '20px';
-    printDiv.style.fontFamily = 'Arial, sans-serif';
-    printDiv.style.color = '#000';
-    printDiv.style.background = '#fff';
-    
-    printDiv.innerHTML = `
-      <div style="text-align:center; margin-bottom: 20px;">
-        <h1 style="color: #1e3a5f; margin:0;">KP Strategy 360°</h1>
-        <p style="color: #666; margin: 5px 0;">Rapport : ${module} - Généré le ${new Date().toLocaleDateString('fr-FR')}</p>
-      </div>
-      <table style="width:100%; border-collapse: collapse; font-size: 12px;">
-        <thead>
-          <tr style="background: #f0f4f8; color: #1e3a5f;">
-            ${headersToPrint.map(h => `<th style="padding: 8px; border: 1px solid #ddd; text-align: left;">${h}</th>`).join('')}
-          </tr>
-        </thead>
-        <tbody>
-          ${dataToPrint.map(row => `<tr>${headersToPrint.map((_, i) => `<td style="padding: 8px; border: 1px solid #ddd;">${row[i] || ''}</td>`).join('')}</tr>`).join('')}
-        </tbody>
-      </table>
-    `;
+    const logo = await loadLogoDataUrl();
+    const n = headersToPrint.length;
+    const fs = n <= 8 ? 12 : n <= 14 ? 9 : 7;
+    const navBtn = document.querySelector(`.nav-btn[data-sheet="${module}"]`);
+    const label = module === 'DASHBOARD' ? 'Tableau de bord' : (navBtn ? navBtn.textContent.trim() : module);
+    const TURQ = '#38bdc2', GREY = '#e9edf0', LINE = '#9aa7b0';
 
+    const th = headersToPrint.map(h => `<th style="background:${TURQ};color:#000;padding:6px;border:1px solid ${LINE};text-align:left;font-weight:700;">${esc(h)}</th>`).join('');
+    const body = dataToPrint.map((row, r) => `<tr style="background:${r % 2 ? GREY : '#ffffff'};">${headersToPrint.map((_, i) => `<td style="padding:6px;border:1px solid ${LINE};color:#000;word-break:break-word;vertical-align:top;">${esc(row[i])}</td>`).join('')}</tr>`).join('');
+
+    const printDiv = document.createElement('div');
+    printDiv.style.cssText = 'width:1050px;padding:16px;font-family:Arial,sans-serif;color:#000;background:#fff;';
+    printDiv.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;border-bottom:3px solid ${TURQ};margin-bottom:14px;"><tr>
+        <td style="width:240px;padding:0 0 10px 0;border:none;">${logo ? `<img src="${logo}" style="height:64px;" alt="KP Strategy">` : ''}</td>
+        <td style="padding:0 0 10px 0;border:none;text-align:right;color:#000;">
+          <div style="font-size:20px;font-weight:700;color:#000;">Rapport : ${esc(label)}</div>
+          <div style="font-size:11px;color:#000;margin-top:4px;">Généré le ${new Date().toLocaleDateString('fr-FR')} par ${esc(state.currentUserEmail)} - ${dataToPrint.length} ligne(s)</div>
+        </td>
+      </tr></table>
+      <table style="width:100%;border-collapse:collapse;font-size:${fs}px;color:#000;${n > 12 ? 'table-layout:fixed;' : ''}"><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table>
+      <div style="margin-top:14px;padding-top:8px;border-top:1px solid ${LINE};font-size:10px;color:#000;text-align:center;">KP Strategy SARL - Votre accompagnement 360° - Douala, Cameroun</div>`;
+
+    const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
     const opt = {
-      margin: 10,
-      filename: `Rapport_KP_${module}_${new Date().toISOString().slice(0,10)}.pdf`,
+      margin: [10, 8, 12, 8],
+      filename: `Rapport_KP_${module}_${new Date().toISOString().slice(0, 10)}.pdf`,
       image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
+      html2canvas: { scale: mobile ? 1 : 2, useCORS: true, backgroundColor: '#ffffff' },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+      pagebreak: { mode: ['css', 'legacy'], avoid: 'tr' }
     };
 
-    await html2pdf().set(opt).from(printDiv).save();
-    document.getElementById('report-modal').classList.add('hidden');
-    
+    await html2pdf().set(opt).from(printDiv).toPdf().get('pdf').then(pdf => {
+      const total = pdf.internal.getNumberOfPages(), w = pdf.internal.pageSize.getWidth(), h = pdf.internal.pageSize.getHeight();
+      for (let i = 1; i <= total; i++) {
+        pdf.setPage(i); pdf.setFontSize(8); pdf.setTextColor(0, 0, 0);
+        pdf.text(`Page ${i} / ${total}`, w - 8, h - 5, { align: 'right' });
+      }
+    }).save();
+    $id('report-modal').classList.add('hidden');
+
   } catch (err) {
     alert('Erreur lors de la génération du PDF : ' + err.message);
   } finally {
@@ -793,7 +879,7 @@ function initComparator() {
     const label = document.createElement('label'); label.textContent = `Fournisseur ${i + 1}`;
     const select = document.createElement('select'); select.id = `compare-select-${i}`;
     select.innerHTML = `<option value="">-- Aucun --</option>`;
-    state.fournisseursData.forEach((f, index) => { select.innerHTML += `<option value="${index}">${f.id} — ${f.nom}</option>`; });
+    state.fournisseursData.forEach((f, index) => { select.innerHTML += `<option value="${index}">${esc(f.id)} — ${esc(f.nom)}</option>`; });
     if (comparatorState.selections[i] !== null) select.value = comparatorState.selections[i];
     select.addEventListener('change', (e) => { comparatorState.selections[i] = e.target.value === '' ? null : parseInt(e.target.value); renderComparison(); });
     wrapper.appendChild(label); wrapper.appendChild(select); selectorsContainer.appendChild(wrapper);
@@ -841,13 +927,13 @@ function renderComparison() {
   ];
 
   let html = `<table class="comparator-table comparator-ident"><thead><tr><th>Critère</th>`;
-  selected.forEach(s => { html += `<th><i class="fa-solid fa-building"></i> ${s.data.nom}</th>`; });
+  selected.forEach(s => { html += `<th><i class="fa-solid fa-building"></i> ${esc(s.data.nom)}</th>`; });
   html += `</tr></thead><tbody>`;
   idRows.forEach(r => {
     html += `<tr><td><strong>${r.label}</strong></td>`;
     selected.forEach(s => {
       let v = (r.key === 'id') ? s.data.id : (r.key === 'nom') ? s.data.nom : getField(s.data, r.key);
-      html += `<td>${v || '-'}</td>`;
+      html += `<td>${esc(v) || '-'}</td>`;
     });
     html += `</tr>`;
   });
@@ -878,7 +964,7 @@ function renderComparison() {
   ];
 
   let evalHtml = `<table class="comparator-table comparator-eval"><thead><tr><th>Critère</th>`;
-  selected.forEach(s => { evalHtml += `<th>${s.data.nom}</th>`; });
+  selected.forEach(s => { evalHtml += `<th>${esc(s.data.nom)}</th>`; });
   evalHtml += `<th>Pondération</th></tr></thead><tbody>`;
 
   criteresEval.forEach((c, cIdx) => {
@@ -915,7 +1001,7 @@ function renderComparison() {
     const rec = selected[recoIdx];
     recoContainer.innerHTML = `
       <div class="reco-grid">
-        <div class="reco-item"><label>Fournisseur recommandé</label><strong>${rec.data.nom}</strong></div>
+        <div class="reco-item"><label>Fournisseur recommandé</label><strong>${esc(rec.data.nom)}</strong></div>
         <div class="reco-item"><label>Score final</label><strong>${maxScore} / 100</strong></div>
         <div class="reco-item full"><label>Justification</label><textarea id="reco-justif" placeholder="Saisir la justification..."></textarea></div>
         <div class="reco-item full"><label>Avantages</label><textarea id="reco-avantages" placeholder="Saisir les avantages..."></textarea></div>
