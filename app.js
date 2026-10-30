@@ -15,6 +15,8 @@ const comparatorState = {
 };
 
 let pingInterval = null;
+let chartFournisseursInstance = null;
+let chartProjetsInstance = null;
 
 document.addEventListener('DOMContentLoaded', () => { bindEvents(); });
 
@@ -34,12 +36,39 @@ function bindEvents() {
   if ($('add-btn')) $('add-btn').addEventListener('click', () => openModal(null));
   if ($('refresh-btn')) $('refresh-btn').addEventListener('click', onRefresh);
   if ($('search-input')) $('search-input').addEventListener('input', onSearch);
-  
   if ($('modal-close')) $('modal-close').addEventListener('click', closeModal);
   if ($('cancel-btn')) $('cancel-btn').addEventListener('click', closeModal);
-
   if ($('nav-prev-btn')) $('nav-prev-btn').addEventListener('click', () => document.querySelector('.table-wrapper').scrollBy({ left: -300, behavior: 'smooth' }));
   if ($('nav-next-btn')) $('nav-next-btn').addEventListener('click', () => document.querySelector('.table-wrapper').scrollBy({ left: 300, behavior: 'smooth' }));
+  
+  // GESTION DU MENU MOBILE
+  const mobileBtn = document.getElementById('mobile-menu-btn');
+  const sidebar = document.getElementById('sidebar');
+  if (mobileBtn && sidebar) {
+    mobileBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sidebar.classList.toggle('open');
+    });
+    
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (window.innerWidth <= 768) sidebar.classList.remove('open');
+      });
+    });
+  }
+}
+
+function onRefresh() {
+  if (state.currentSheet === 'DASHBOARD') {
+    loadDashboard();
+  } else if (state.currentSheet === 'COMPARATEUR') {
+    refreshFournisseursCache().then(initComparator);
+  } else if (state.currentSheet === 'RELANCES') {
+    loadRelancesView();
+  } else {
+    loadSheet();
+  }
+  showToast('🔄 Données actualisées', 'success');
 }
 
 window.quickFilter = function(sheetKey, filterStr) {
@@ -221,57 +250,69 @@ async function switchSheet(sheetKey) {
   }
 }
 
+function getColIndex(headers, colName) {
+  return headers.findIndex(h => (h || '').toString().toLowerCase().trim() === colName.toLowerCase());
+}
+
 async function loadDashboard() {
   const container = document.getElementById('dashboard-stats');
   if (!container) return;
   container.innerHTML = '<div class="loading"><i class="fa-solid fa-spinner fa-spin"></i> Analyse des données...</div>';
   
   try {
-    const getRows = async (sheetName) => {
+    const fetchData = async (sheetName) => {
       try {
-        if (!sheetName) return [];
+        if (typeof sheetsAPI.ensureSheet === 'function') {
+          await sheetsAPI.ensureSheet(sheetName, SCHEMAS[sheetName] || []);
+        }
         const values = await sheetsAPI.readSheet(sheetName);
-        return (values && values.length > 1) ? values.slice(1).filter(r => r.some(c => c)) : [];
-      } catch (e) { return []; }
+        if (!values || values.length < 1) return { headers: [], rows: [] };
+        return { headers: values[0], rows: values.slice(1).filter(r => r.some(c => c)) };
+      } catch (e) { return { headers: [], rows: [] }; }
     };
 
-    const [contacts, fournisseurs, epc, ingenieurs, tradeFin, garanties, relances, projets] = await Promise.all([
-      getRows(CONFIG.SHEETS.CONTACTS), getRows(CONFIG.SHEETS.FOURNISSEURS), getRows(CONFIG.SHEETS.EPC),
-      getRows(CONFIG.SHEETS.INGENIEURS), getRows(CONFIG.SHEETS.TRADE_FINANCE), getRows(CONFIG.SHEETS.GARANTIES),
-      getRows(CONFIG.SHEETS.RELANCES), getRows(CONFIG.SHEETS.PROJETS)
+    const [dataContacts, dataFournisseurs, dataEpc, dataIngenieurs, dataTradeFin, dataGaranties, dataRelances, dataProjets] = await Promise.all([
+      fetchData(CONFIG.SHEETS.CONTACTS), fetchData(CONFIG.SHEETS.FOURNISSEURS), fetchData(CONFIG.SHEETS.EPC),
+      fetchData(CONFIG.SHEETS.INGENIEURS), fetchData(CONFIG.SHEETS.TRADE_FINANCE), fetchData(CONFIG.SHEETS.GARANTIES),
+      fetchData(CONFIG.SHEETS.RELANCES), fetchData(CONFIG.SHEETS.PROJETS)
     ]);
 
-    const countWhere = (arr, colIdx, keyword) => arr.filter(r => (r[colIdx] || '').toString().toLowerCase().includes(keyword.toLowerCase())).length;
+    const countWhere = (data, colName, keyword) => {
+      const idx = getColIndex(data.headers, colName);
+      if (idx === -1) return 0;
+      return data.rows.filter(r => (r[idx] || '').toString().toLowerCase().includes(keyword.toLowerCase())).length;
+    };
 
-    const totalContacts = contacts.length;
-    const contactsVerifies = countWhere(contacts, 14, 'vérifié') + countWhere(contacts, 14, 'valide');
+    const totalContacts = dataContacts.rows.length;
+    const contactsVerifies = countWhere(dataContacts, 'Statut vérification', 'vérifié') + countWhere(dataContacts, 'Statut vérification', 'valide');
     const contactsAfficher = totalContacts - contactsVerifies;
-    const contactsEnNegociation = countWhere(contacts, 15, 'négociation') + countWhere(contacts, 14, 'négociation');
+    const contactsEnNegociation = countWhere(dataContacts, 'Priorité', 'négociation') + countWhere(dataContacts, 'Statut vérification', 'négociation');
     
-    const totalProjets = projets.length;
-    const projetsEnCours = countWhere(projets, 7, 'cours') + countWhere(projets, 7, 'exécution');
-    const projetsRechercheFinancement = countWhere(projets, 7, 'recherche') + countWhere(projets, 7, 'financement');
+    const totalProjets = dataProjets.rows.length;
+    const projetsEnCours = countWhere(dataProjets, 'Statut', 'cours') + countWhere(dataProjets, 'Statut', 'exécution');
+    const projetsRecherche = countWhere(dataProjets, 'Statut', 'recherche') + countWhere(dataProjets, 'Statut', 'financement');
 
-    const totalFournisseurs = fournisseurs.length;
-    const fSoja = countWhere(fournisseurs, 8, 'soja') + countWhere(fournisseurs, 7, 'soja');
-    const fBle = countWhere(fournisseurs, 8, 'blé') + countWhere(fournisseurs, 7, 'blé') + countWhere(fournisseurs, 8, 'ble') + countWhere(fournisseurs, 7, 'ble');
-    const fMais = countWhere(fournisseurs, 8, 'maïs') + countWhere(fournisseurs, 7, 'maïs');
-    const fRiz = countWhere(fournisseurs, 8, 'riz') + countWhere(fournisseurs, 7, 'riz');
-    const fCable = countWhere(fournisseurs, 8, 'cable') + countWhere(fournisseurs, 7, 'cable') + countWhere(fournisseurs, 8, 'câble') + countWhere(fournisseurs, 7, 'câble');
-    const fMachines = countWhere(fournisseurs, 8, 'machine') + countWhere(fournisseurs, 7, 'machine');
-    const fOM = countWhere(fournisseurs, 8, 'maintenance') + countWhere(fournisseurs, 7, 'maintenance') + countWhere(fournisseurs, 8, 'om') + countWhere(fournisseurs, 7, 'om');
+    const totalFournisseurs = dataFournisseurs.rows.length;
+    const fSoja = countWhere(dataFournisseurs, 'Catégorie', 'soja') + countWhere(dataFournisseurs, 'Spécialité', 'soja');
+    const fBle = countWhere(dataFournisseurs, 'Catégorie', 'blé') + countWhere(dataFournisseurs, 'Spécialité', 'blé');
+    const fMais = countWhere(dataFournisseurs, 'Catégorie', 'maïs') + countWhere(dataFournisseurs, 'Spécialité', 'maïs');
+    const fRiz = countWhere(dataFournisseurs, 'Catégorie', 'riz') + countWhere(dataFournisseurs, 'Spécialité', 'riz');
+    const fCable = countWhere(dataFournisseurs, 'Catégorie', 'câble') + countWhere(dataFournisseurs, 'Spécialité', 'câble');
+    const fMachines = countWhere(dataFournisseurs, 'Catégorie', 'machine') + countWhere(dataFournisseurs, 'Spécialité', 'machine');
+    const fOM = countWhere(dataFournisseurs, 'Catégorie', 'maintenance') + countWhere(dataFournisseurs, 'Spécialité', 'maintenance') + countWhere(dataFournisseurs, 'Catégorie', 'om');
 
     let relancesRetard = 0;
     const today = new Date(); today.setHours(0,0,0,0);
-    relances.forEach(row => {
-      const statut = (row[7] || '').toString().toLowerCase();
-      if (statut.includes('fait') || statut.includes('terminé') || statut.includes('clos')) return;
-      const dateStr = row[4] || '';
-      if (dateStr) {
-        const d = new Date(dateStr);
+    const idxRelanceDate = getColIndex(dataRelances.headers, 'Date Prévue');
+    const idxRelanceStatut = getColIndex(dataRelances.headers, 'Statut');
+    if (idxRelanceDate !== -1) {
+      dataRelances.rows.forEach(row => {
+        const statut = idxRelanceStatut !== -1 ? (row[idxRelanceStatut] || '').toString().toLowerCase() : '';
+        if (statut.includes('fait') || statut.includes('terminé') || statut.includes('clos')) return;
+        const d = new Date(row[idxRelanceDate]);
         if (!isNaN(d)) { d.setHours(0,0,0,0); if (d < today) relancesRetard++; }
-      }
-    });
+      });
+    }
 
     const createCard = (title, val, sheetTarget, filterStr = '') => `
       <div class="stat-card" onclick="switchSheet('${sheetTarget}'); if('${filterStr}') { setTimeout(() => { document.getElementById('search-input').value='${filterStr}'; onSearch(); }, 300); }">
@@ -296,11 +337,11 @@ async function loadDashboard() {
     container.innerHTML = `
       ${createCard('Total contacts', totalContacts, 'CONTACTS')}
       ${createCard('Fournisseurs', totalFournisseurs, 'FOURNISSEURS')}
-      ${createCard('Entreprises EPC', epc.length, 'EPC')}
-      ${createCard('Ingénieurs / Experts', ingenieurs.length, 'INGENIEURS')}
+      ${createCard('Entreprises EPC', dataEpc.rows.length, 'EPC')}
+      ${createCard('Ingénieurs / Experts', dataIngenieurs.rows.length, 'INGENIEURS')}
 
-      ${createCard('Partenaires Financiers', tradeFin.length, 'TRADE_FINANCE')}
-      ${createCard('Organismes de Garantie', garanties.length, 'GARANTIES')}
+      ${createCard('Partenaires Financiers', dataTradeFin.rows.length, 'TRADE_FINANCE')}
+      ${createCard('Organismes de Garantie', dataGaranties.rows.length, 'GARANTIES')}
       ${createCard('Projets', totalProjets, 'PROJETS')}
       ${createCard('Relances en retard', relancesRetard, 'RELANCES', 'retard')}
 
@@ -313,11 +354,51 @@ async function loadDashboard() {
       ${createSubCard('Fournisseurs Blé', 'FOURNISSEURS', 'blé', [{val: fBle, label:'Référencés'}])}
       ${createSubCard('Fournisseurs Maïs', 'FOURNISSEURS', 'maïs', [{val: fMais, label:'Référencés'}])}
       ${createSubCard('Fournisseurs Riz', 'FOURNISSEURS', 'riz', [{val: fRiz, label:'Référencés'}])}
-      ${createSubCard('Fournisseurs Câble', 'FOURNISSEURS', 'cable', [{val: fCable, label:'Référencés'}])}
+      ${createSubCard('Fournisseurs Câble', 'FOURNISSEURS', 'câble', [{val: fCable, label:'Référencés'}])}
       ${createSubCard('Opérateurs Maintenance', 'FOURNISSEURS', 'maintenance', [{val: fOM, label:'Référencés'}])}
       ${createSubCard('Fabricants de Machines', 'FOURNISSEURS', 'machine', [{val: fMachines, label:'Référencés'}])}
-      ${createCard('Projets en recherche', projetsRechercheFinancement, 'PROJETS', 'recherche')}
+      ${createCard('Projets en recherche', projetsRecherche, 'PROJETS', 'recherche')}
     `;
+
+    const ctxFournisseurs = document.getElementById('chartFournisseurs');
+    if (ctxFournisseurs) {
+      if (chartFournisseursInstance) chartFournisseursInstance.destroy();
+      chartFournisseursInstance = new Chart(ctxFournisseurs, {
+        type: 'doughnut',
+        data: {
+          labels: ['Soja', 'Blé', 'Maïs', 'Riz', 'Câble', 'Machines', 'Maintenance', 'Autres'],
+          datasets: [{
+            data: [fSoja, fBle, fMais, fRiz, fCable, fMachines, fOM, Math.max(0, totalFournisseurs - (fSoja+fBle+fMais+fRiz+fCable+fMachines+fOM))],
+            backgroundColor: ['#00d2ff', '#2ed573', '#f2c94c', '#ff9f43', '#a29bfe', '#ff4757', '#7f8c8d', '#bdc3c7'],
+            borderWidth: 0
+          }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#e2e8f0' } } } }
+      });
+    }
+
+    const ctxProjets = document.getElementById('chartProjets');
+    if (ctxProjets) {
+      if (chartProjetsInstance) chartProjetsInstance.destroy();
+      chartProjetsInstance = new Chart(ctxProjets, {
+        type: 'bar',
+        data: {
+          labels: ['En cours', 'Recherche', 'Autres'],
+          datasets: [{
+            label: 'Nombre de projets',
+            data: [projetsEnCours, projetsRecherche, Math.max(0, totalProjets - projetsEnCours - projetsRecherche)],
+            backgroundColor: ['#00d2ff', '#f2c94c', '#7f8c8d'],
+            borderRadius: 6
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          scales: { y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { color: '#94a3b8' } }, x: { ticks: { color: '#94a3b8' }, grid: { display: false } } },
+          plugins: { legend: { display: false } }
+        }
+      });
+    }
+
   } catch (err) { container.innerHTML = `<div class="error"><i class="fa-solid fa-triangle-exclamation"></i> Erreur : ${err.message}</div>`; }
 }
 
@@ -326,11 +407,7 @@ window.filterDashboardCards = function() {
   const cards = document.querySelectorAll('.stat-card');
   cards.forEach(card => {
     const title = card.querySelector('.stat-title').textContent.toLowerCase();
-    if (title.includes(query)) {
-      card.style.display = 'flex';
-    } else {
-      card.style.display = 'none';
-    }
+    card.style.display = title.includes(query) ? 'flex' : 'none';
   });
 };
 
@@ -351,6 +428,10 @@ async function loadSheet() {
   document.getElementById('error-box').classList.add('hidden');
 
   try {
+    if (typeof sheetsAPI.ensureSheet === 'function') {
+      await sheetsAPI.ensureSheet(sheetName, SCHEMAS[state.currentSheet] || []);
+    }
+    
     const values = await sheetsAPI.readSheet(sheetName);
     if (!values || values.length === 0) {
       state.headers = SCHEMAS[state.currentSheet] || [];
@@ -373,6 +454,9 @@ async function loadRelancesView() {
   const sheetName = CONFIG.SHEETS.RELANCES;
   document.getElementById('loading').classList.remove('hidden');
   try {
+    if (typeof sheetsAPI.ensureSheet === 'function') {
+      await sheetsAPI.ensureSheet(sheetName, SCHEMAS['RELANCES'] || []);
+    }
     const values = await sheetsAPI.readSheet(sheetName);
     state.headers = (values && values[0] && values[0].length) ? values[0] : (SCHEMAS.RELANCES || []);
     state.data = []; state.indexedData = [];
@@ -381,7 +465,10 @@ async function loadRelancesView() {
         if (row.some(c => c)) { state.data.push(row); state.indexedData.push({ row, sourceIndex: srcIdx }); }
       });
     }
-    state.indexedData.sort((a, b) => (new Date(a.row[4] || 0).getTime() || 0) - (new Date(b.row[4] || 0).getTime() || 0));
+    const idxDate = getColIndex(state.headers, 'Date Prévue');
+    if (idxDate !== -1) {
+      state.indexedData.sort((a, b) => (new Date(a.row[idxDate] || 0).getTime() || 0) - (new Date(b.row[idxDate] || 0).getTime() || 0));
+    }
     state.page = 0; applyFilter();
   } catch (err) {
     document.getElementById('error-box').textContent = 'Erreur : ' + err.message;
@@ -453,10 +540,18 @@ function renderPagination() {
   }
 }
 
+function generateAutoId(prefix) {
+  const timestamp = Date.now().toString().slice(-4);
+  const random = Math.floor(Math.random() * 100).toString().padStart(2, '0');
+  return `${prefix}-${timestamp}${random}`;
+}
+
 function openModal(sourceIndex) {
   state.editingRow = sourceIndex;
   document.getElementById('modal-title').textContent = sourceIndex === null ? 'Ajouter une entrée' : 'Modifier l\'entrée';
   const fields = document.getElementById('form-fields'); fields.innerHTML = '';
+
+  const idPrefix = state.currentSheet === 'FOURNISSEURS' ? 'F' : state.currentSheet === 'CONTACTS' ? 'C' : state.currentSheet === 'PROJETS' ? 'P' : 'ID';
 
   state.headers.forEach((header, idx) => {
     const group = document.createElement('div'); group.className = 'form-group';
@@ -467,7 +562,7 @@ function openModal(sourceIndex) {
       input = document.createElement('select');
       input.innerHTML = `<option value="">-- Choisir --</option>`;
       const options = header === 'Catégorie' 
-        ? ['Soja', 'Blé', 'Maïs', 'Riz', 'Câble', 'Machines', 'Maintenance', 'Autre']
+        ? ['Soja', 'Blé', 'Maïs', 'Riz', 'Câble', 'Machines', 'Maintenance', 'OM', 'Autre']
         : header === 'Type acteur'
         ? ['Fournisseur', 'Partenaire Financier', 'EPC', 'Ingénieur', 'Organisme de Garantie', 'Client']
         : header === 'Statut' || header === 'Priorité'
@@ -481,20 +576,27 @@ function openModal(sourceIndex) {
     
     input.id = `field-${idx}`;
     input.name = `field-${idx}`;
-    if (sourceIndex !== null) {
+
+    if (header === 'ID' || header === 'ID Contact' || header === 'ID Projet' || header === 'ID Garantie' || header === 'ID Expert' || header === 'ID Relance') {
+      if (sourceIndex === null) {
+        input.value = generateAutoId(idPrefix);
+      } else {
+        const item = state.indexedData.find(it => it.sourceIndex === sourceIndex);
+        if (item) input.value = item.row[idx] || '';
+      }
+    } else if (sourceIndex !== null) {
       const item = state.indexedData.find(it => it.sourceIndex === sourceIndex);
       if (item) input.value = item.row[idx] || '';
     }
+    
     group.appendChild(label); group.appendChild(input); fields.appendChild(group);
   });
   document.getElementById('modal').classList.remove('hidden');
 }
 
-// CETTE FONCTION FAIT UN RETOUR EN ARRIÈRE
 function closeModal() { 
   document.getElementById('modal').classList.add('hidden'); 
   state.editingRow = null; 
-  // Si on est sur le dashboard, on recharge, sinon on ne fait rien
   if (state.currentSheet === 'DASHBOARD') {
     loadDashboard();
   }
