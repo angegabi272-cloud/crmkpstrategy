@@ -4,9 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>KP Strategy 360°</title>
+  
+  <!-- LOGO SUR L'ONGLET DU NAVIGATEUR -->
+  <link rel="icon" type="image/png" href="logo.png">
+  
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
 
@@ -45,6 +50,9 @@
 
     <header class="topbar glass-panel">
       <div class="logo">
+        <!-- BOUTON HAMBURGER POUR MOBILE -->
+        <button id="mobile-menu-btn" class="btn-close" style="display:none; margin-right: 10px; color: var(--primary);"><i class="fa-solid fa-bars"></i></button>
+        
         <div class="logo-container-small">
           <img src="logo.png" alt="KP" onerror="this.style.display='none'">
         </div>
@@ -58,7 +66,7 @@
 
     <div class="layout">
       <!-- Sidebar -->
-      <aside class="sidebar glass-panel">
+      <aside class="sidebar glass-panel" id="sidebar">
         <nav id="nav-menu">
           <div class="nav-section-title">Pilotage</div>
           <button data-sheet="DASHBOARD" class="nav-btn active"><i class="fa-solid fa-chart-line"></i> Tableau de bord</button>
@@ -112,13 +120,13 @@
               <h2 class="glow-text">Tableau de bord KP 360°</h2>
               <p class="subtitle">Vue d'ensemble interactive de l'ingénierie financière.</p>
             </div>
-            <button type="button" class="btn-primary" onclick="openReportModal()"><i class="fa-solid fa-file-pdf"></i> Générer un Rapport PDF</button>
+            <button type="button" class="btn-primary" onclick="openReportModal()"><i class="fa-solid fa-file-pdf"></i> Rapport PDF</button>
           </div>
 
           <div class="toolbar" style="margin-bottom: 20px;">
             <div class="search-box">
               <i class="fa-solid fa-search"></i>
-              <input type="text" id="dashboard-search" placeholder="Rechercher une carte (ex: Soja, Projets...)" oninput="filterDashboardCards()">
+              <input type="text" id="dashboard-search" placeholder="Rechercher une carte..." oninput="filterDashboardCards()">
             </div>
             <div class="toolbar-actions">
               <button type="button" class="btn-primary" onclick="openChoiceModal()"><i class="fa-solid fa-plus"></i> Nouvelle Entrée</button>
@@ -126,6 +134,22 @@
           </div>
 
           <div class="dashboard-grid" id="dashboard-stats"></div>
+
+          <!-- SECTION GRAPHIQUES STATISTIQUES -->
+          <div class="charts-section" style="margin-top: 40px;">
+            <h3 class="glow-text" style="margin-bottom: 20px; font-size: 22px;">📊 Statistiques & Analyses</h3>
+            <div class="charts-grid">
+              <div class="chart-card glass-panel">
+                <h4>Répartition des Fournisseurs par Catégorie</h4>
+                <div class="chart-container"><canvas id="chartFournisseurs"></canvas></div>
+              </div>
+              <div class="chart-card glass-panel">
+                <h4>Statut des Projets (En cours vs Terminés)</h4>
+                <div class="chart-container"><canvas id="chartProjets"></canvas></div>
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <!-- VUE COMPARATEUR -->
@@ -163,7 +187,7 @@
               <h2 id="page-title">Données</h2>
               <p class="subtitle" id="page-subtitle">Gestion des enregistrements</p>
             </div>
-            <button type="button" class="btn-primary" onclick="openReportModal()"><i class="fa-solid fa-file-pdf"></i> Exporter en PDF</button>
+            <button type="button" class="btn-primary" onclick="openReportModal()"><i class="fa-solid fa-file-pdf"></i> Exporter PDF</button>
           </div>
           
           <div class="toolbar">
@@ -178,8 +202,8 @@
           </div>
 
           <div class="nav-controls">
-            <button type="button" id="nav-prev-btn" class="btn-nav"><i class="fa-solid fa-arrow-left"></i> Colonne Précédente</button>
-            <button type="button" id="nav-next-btn" class="btn-nav">Colonne Suivante <i class="fa-solid fa-arrow-right"></i></button>
+            <button type="button" id="nav-prev-btn" class="btn-nav"><i class="fa-solid fa-arrow-left"></i> Précédent</button>
+            <button type="button" id="nav-next-btn" class="btn-nav">Suivant <i class="fa-solid fa-arrow-right"></i></button>
           </div>
 
           <div id="loading" class="loading hidden"><i class="fa-solid fa-spinner fa-spin"></i> Chargement...</div>
@@ -202,7 +226,12 @@
     <div class="modal-content glass-panel">
       <div class="modal-header">
         <h3 id="modal-title">Ajouter</h3>
-        <button type="button" id="modal-close" class="btn-close"><i class="fa-solid fa-xmark"></i></button>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <button type="button" class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="closeModal()">
+            <i class="fa-solid fa-arrow-left"></i> Retour
+          </button>
+          <button type="button" id="modal-close" class="btn-close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
       </div>
       <form id="modal-form" class="modal-form" onsubmit="event.preventDefault();">
         <div id="form-fields"></div>
@@ -214,7 +243,7 @@
     </div>
   </div>
 
-  <!-- Modal de Choix de Rubrique (Ajout depuis Dashboard) -->
+  <!-- Modal de Choix de Rubrique -->
   <div id="choice-modal" class="modal hidden">
     <div class="modal-content glass-panel" style="max-width: 400px;">
       <div class="modal-header">
@@ -264,7 +293,6 @@
     </div>
   </div>
 
-  <!-- Toast -->
   <div id="toast" class="toast hidden"></div>
 
   <script src="config.js"></script>
