@@ -129,6 +129,31 @@ class GoogleSheetsAPI {
       throw error;
     }
   }
+
+  // FONCTION AJOUTÉE : Crée la feuille si elle n'existe pas
+  async ensureSheet(sheetName, headers) {
+    try {
+      const spreadsheet = await gapi.client.sheets.spreadsheets.get({
+        spreadsheetId: this.config.SPREADSHEET_ID,
+      });
+      const exists = spreadsheet.result.sheets.some(
+        s => s.properties.title === sheetName
+      );
+      if (!exists) {
+        await gapi.client.sheets.spreadsheets.batchUpdate({
+          spreadsheetId: this.config.SPREADSHEET_ID,
+          resource: {
+            requests: [{
+              addSheet: { properties: { title: sheetName } },
+            }],
+          },
+        });
+        await this.writeSheet(sheetName, [headers]);
+      }
+    } catch (error) {
+      console.error(`Erreur création ${sheetName}:`, error);
+    }
+  }
 }
 
 window.sheetsAPI = new GoogleSheetsAPI(CONFIG);
