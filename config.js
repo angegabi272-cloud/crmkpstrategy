@@ -3,6 +3,9 @@ const CONFIG = {
   API_KEY: 'AIzaSyBz69fTFoHAPZbmpOo4WROWfpABiYjv3N4',
   CLIENT_ID: '1078594296294-jj8sebovm4ok6l7hh760cg664tt5tpks.apps.googleusercontent.com',
   SCOPES: 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email',
+  PRESENCE_MS: 60000,   // battement de présence (1 écriture / minute / utilisateur)
+  REFRESH_MS: 60000,    // actualisation automatique des données
+  CACHE_MS: 15000,      // cache de lecture (limite les appels Google)
   SHEETS: {
     DASHBOARD: 'DASHBOARD', CONTACTS: 'CONTACTS', FOURNISSEURS: 'FOURNISSEURS',
     COMPARATEUR: 'COMPARATEUR', ACTUALISATION: 'ACTUALISATION', EPC: 'EPC',
