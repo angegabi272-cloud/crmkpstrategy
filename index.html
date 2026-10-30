@@ -2,7 +2,14 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0f1c">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="KP 360°">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <title>KP Strategy 360°</title>
   
   <!-- LOGO SUR L'ONGLET DU NAVIGATEUR -->
@@ -11,9 +18,10 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
+  <div id="offline-banner" class="offline-banner hidden"><i class="fa-solid fa-wifi"></i> Hors connexion : reconnexion en cours...</div>
 
   <!-- Écran de connexion 3D -->
   <div id="login-screen" class="login-screen">
@@ -26,7 +34,7 @@
     </div>
     <div class="login-box glass-panel">
       <div class="logo-container">
-        <img src="logo.png" alt="KP Strategy" onerror="this.src='https://via.placeholder.com/140?text=LOGO'">
+        <img src="logo.png" alt="KP Strategy" onerror="this.style.display='none'">
       </div>
       <h1 class="glow-text">KP Strategy 360°</h1>
       <p>Plateforme d'Ingénierie Financière & Trade Finance</p>
@@ -201,6 +209,8 @@
             </div>
           </div>
 
+          <div id="filter-chip" class="filter-chip hidden"><i class="fa-solid fa-filter"></i><span></span><button type="button" onclick="clearContactFilter()" title="Retirer le filtre"><i class="fa-solid fa-xmark"></i></button></div>
+
           <div class="nav-controls">
             <button type="button" id="nav-prev-btn" class="btn-nav"><i class="fa-solid fa-arrow-left"></i> Précédent</button>
             <button type="button" id="nav-next-btn" class="btn-nav">Suivant <i class="fa-solid fa-arrow-right"></i></button>
@@ -278,6 +288,9 @@
             <option value="EPC">EPC</option>
             <option value="TRADE_FINANCE">Trade Finance</option>
             <option value="RELANCES">Relances</option>
+            <option value="INGENIEURS">Ingénieurs</option>
+            <option value="GARANTIES">Garanties</option>
+            <option value="INTERACTIONS">Interactions</option>
           </select>
         </div>
         <div class="form-group">
@@ -289,6 +302,31 @@
           <input type="date" id="report-date-end">
         </div>
         <button type="button" class="btn-primary" onclick="generatePDF()" id="btn-generate-pdf" style="margin-top: 10px;"><i class="fa-solid fa-download"></i> Télécharger le PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal de vérification d'un contact -->
+  <div id="verify-modal" class="modal hidden">
+    <div class="modal-content glass-panel" style="max-width: 460px;">
+      <div class="modal-header">
+        <h3>Vérifier le contact</h3>
+        <button type="button" class="btn-close" onclick="closeVerifyModal()"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div style="padding: 24px; display:flex; flex-direction:column; gap:16px;">
+        <strong id="verify-name" style="color:#fff; font-size:16px;"></strong>
+        <div class="form-group">
+          <label for="verify-choice">Résultat de la vérification</label>
+          <select id="verify-choice"></select>
+        </div>
+        <div class="form-group">
+          <label for="verify-note">Note (facultatif)</label>
+          <textarea id="verify-note" placeholder="Ex. numéro confirmé par téléphone"></textarea>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:12px; flex-wrap:wrap;">
+          <button type="button" class="btn-secondary" onclick="closeVerifyModal()">Annuler</button>
+          <button type="button" id="verify-confirm-btn" class="btn-primary" onclick="confirmVerify()"><i class="fa-solid fa-circle-check"></i> Enregistrer la vérification</button>
+        </div>
       </div>
     </div>
   </div>
