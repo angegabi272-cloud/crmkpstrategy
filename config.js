@@ -11,7 +11,7 @@ const CONFIG = {
     COMPARATEUR: 'COMPARATEUR', ACTUALISATION: 'ACTUALISATION', EPC: 'EPC',
     TRADE_FINANCE: 'TRADE_FINANCE', GARANTIES: 'GARANTIES', INGENIEURS: 'INGENIEURS',
     INTERACTIONS: 'INTERACTIONS', PROJETS: 'PROJETS', RELANCES: 'RELANCES',
-    UTILISATEURS: 'UTILISATEURS', LOGS: 'LOGS', PRESENCE: 'PRESENCE'
+    UTILISATEURS: 'UTILISATEURS', LOGS: 'LOGS', PRESENCE: 'PRESENCE', CATEGORIES: 'CATEGORIES'
   }
 };
 
@@ -20,6 +20,7 @@ const SCHEMAS = {
   UTILISATEURS: ['Email', 'Role', 'Statut', 'Derniere Connexion', 'Derniere Action'],
   LOGS: ['Date', 'Heure', 'Utilisateur', 'Module', 'Action', 'Details'],
   PRESENCE: ['Email', 'Dernier Ping'],
+  CATEGORIES: ['Nom', 'Icône', 'Créé par', 'Date'],
   CONTACTS: ['ID Contact', 'Type acteur', 'Entreprise', 'Nom', 'Prénom', 'Fonction', 'Pays', 'Ville', 'Secteur', 'Email', 'Téléphone', 'Site web', 'Source info', 'Date dernière vérif', 'Statut vérification', 'Priorité', 'Projets associés', 'Historique échanges'],
   FOURNISSEURS: ['ID', 'Entreprise', 'Pays', 'Contact', 'Email', 'Téléphone', 'Site Web', 'Spécialité', 'Catégorie', 'Statut', 'Commentaires', 'Prix indicatif', 'Devise', 'Nom équipement', 'Capacité production', 'Délai livraison', 'Garantie', 'Pièces détachées', 'Installation', 'Formation', 'SAV', 'Nb conteneurs', 'Conditions paiement', 'Incoterm', 'Certification', 'SBLC', 'Nb camions acheminement', 'Source info', 'Date dernière vérif', 'Statut vérif', 'Note Qualité technique', 'Note Délai', 'Note Garantie', 'Note SAV', 'Note Pièces détachées', 'Note Logistique', 'Note Expérience', 'Note Conditions de paiement', 'LC', 'Note Capacité de production'],
   COMPARATEUR: ['Critère', 'Fournisseur 1', 'Fournisseur 2', 'Fournisseur 3', 'Fournisseur 4', 'Fournisseur 5', 'Pondération', 'Type'],
