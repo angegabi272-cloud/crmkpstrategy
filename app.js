@@ -2,7 +2,7 @@ const state = {
   currentSheet: 'DASHBOARD',
   data: [], headers: [], filteredData: [], indexedData: [], filteredIndexed: [],
   page: 0, pageSize: 25, editingRow: null, fournisseursData: [],
-  currentUserEmail: "chargement...", isAdmin: false, contactFilter: null, silent: false, verifyIndex: null
+  currentUserEmail: "chargement...", isAdmin: false, contactFilter: null, silent: false, verifyIndex: null, activeCategory: null, catTarget: null, categories: null
 };
 
 const ADMIN_EMAIL = "kpstrategy09@gmail.com";
@@ -45,6 +45,8 @@ let chartProjetsInstance = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   bindEvents();
+  state.categories = DEFAULT_CATEGORIES.slice();
+  renderCategoryNav();
   sheetsAPI.onSessionExpired = () => { if (confirm('Votre session Google a expiré. Se reconnecter maintenant ?')) location.reload(); };
   sheetsAPI.preload().catch(e => console.warn('Préchargement Google :', e.message));
   window.addEventListener('offline', () => $id('offline-banner').classList.remove('hidden'));
@@ -136,6 +138,7 @@ async function login() {
     if (!sheetsAPI.isReady()) await sheetsAPI.preload();
     await sheetsAPI.signIn();
     await sheetsAPI.ensureAllSheets(SCHEMAS, SCHEMA_ADDITIONS, SCHEMA_ALIASES);
+    await loadCategories();
     try {
       const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: 'Bearer ' + sheetsAPI.token } });
       const data = await res.json();
@@ -234,7 +237,7 @@ async function switchSheet(sheetKey) {
   }
 
   state.currentSheet = sheetKey;
-  state.contactFilter = null; updateFilterChip();
+  state.contactFilter = null; state.activeCategory = null; updateFilterChip();
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.getAttribute('data-sheet') === sheetKey));
 
   const views = ['dashboard-view', 'table-view', 'comparator-view'];
@@ -273,6 +276,7 @@ async function loadDashboard() {
   
   try {
     const S = CONFIG.SHEETS;
+    await loadCategories();
     const toData = v => (!v || v.length < 1) ? { headers: [], rows: [] } : { headers: v[0], rows: v.slice(1).filter(r => r.some(c => c)) };
     const [dataContacts, dataFournisseurs, dataEpc, dataIngenieurs, dataTradeFin, dataGaranties, dataRelances, dataProjets] =
       (await sheetsAPI.batchRead([S.CONTACTS, S.FOURNISSEURS, S.EPC, S.INGENIEURS, S.TRADE_FINANCE, S.GARANTIES, S.RELANCES, S.PROJETS])).map(toData);
@@ -297,13 +301,10 @@ async function loadDashboard() {
     const projetsRecherche = countWhere(dataProjets, 'Statut', 'recherche') + countWhere(dataProjets, 'Statut', 'financement');
 
     const totalFournisseurs = dataFournisseurs.rows.length;
-    const fSoja = countWhere(dataFournisseurs, 'Catégorie', 'soja') + countWhere(dataFournisseurs, 'Spécialité', 'soja');
-    const fBle = countWhere(dataFournisseurs, 'Catégorie', 'blé') + countWhere(dataFournisseurs, 'Spécialité', 'blé');
-    const fMais = countWhere(dataFournisseurs, 'Catégorie', 'maïs') + countWhere(dataFournisseurs, 'Spécialité', 'maïs');
-    const fRiz = countWhere(dataFournisseurs, 'Catégorie', 'riz') + countWhere(dataFournisseurs, 'Spécialité', 'riz');
-    const fCable = countWhere(dataFournisseurs, 'Catégorie', 'câble') + countWhere(dataFournisseurs, 'Spécialité', 'câble');
-    const fMachines = countWhere(dataFournisseurs, 'Catégorie', 'machine') + countWhere(dataFournisseurs, 'Spécialité', 'machine');
-    const fOM = countWhere(dataFournisseurs, 'Catégorie', 'maintenance') + countWhere(dataFournisseurs, 'Spécialité', 'maintenance') + countWhere(dataFournisseurs, 'Catégorie', 'om');
+    const iCat = getColIndex(dataFournisseurs.headers, 'Catégorie'), iSpe = getColIndex(dataFournisseurs.headers, 'Spécialité');
+    const inCat = (c, r) => catMatches(c, r[iCat]) || catMatches(c, r[iSpe]);
+    const catCounts = state.categories.map(c => ({ c, n: dataFournisseurs.rows.filter(r => inCat(c, r)).length }));
+    const fAutres = dataFournisseurs.rows.filter(r => !state.categories.some(c => inCat(c, r))).length;
 
     let relancesRetard = 0;
     const today = new Date(); today.setHours(0,0,0,0);
@@ -330,6 +331,19 @@ async function loadDashboard() {
         <div class="stat-title">${title}</div>
         <div class="stat-value">${val}</div>
         ${caption ? `<div class="stat-caption">${caption}</div>` : ''}
+      </div>`;
+
+    const createCategoryCard = (c, n) => `
+      <div class="stat-card" data-cat-card="${esc(c.nom)}" onclick="openCategory(this.dataset.catCard)">
+        <div class="stat-title"><i class="fa-solid ${c.icon}"></i> ${esc(c.title || 'Fournisseurs ' + c.nom)}</div>
+        <div class="stat-value">${n}</div>
+        <div class="stat-sub-grid"><div class="stat-sub-item"><span class="stat-sub-val">${n}</span><span>Référencés</span></div></div>
+      </div>`;
+    const addCategoryCard = `
+      <div class="stat-card add-card" onclick="openCategoryModal()">
+        <div class="stat-title"><i class="fa-solid fa-circle-plus"></i> Nouvelle catégorie</div>
+        <div class="stat-value">+</div>
+        <div class="stat-caption">Ajouter un type de fournisseurs</div>
       </div>`;
 
     const createSubCard = (title, sheetTarget, filterStr, subItems = []) => {
@@ -361,13 +375,8 @@ async function loadDashboard() {
       ${createCard('Contacts en négociation', contactsEnNegociation, 'CONTACTS', 'négociation')}
       ${createCard('Projets en cours', projetsEnCours, 'PROJETS', 'cours')}
 
-      ${createSubCard('Fournisseurs Soja', 'FOURNISSEURS', 'soja', [{val: fSoja, label:'Référencés'}])}
-      ${createSubCard('Fournisseurs Blé', 'FOURNISSEURS', 'blé', [{val: fBle, label:'Référencés'}])}
-      ${createSubCard('Fournisseurs Maïs', 'FOURNISSEURS', 'maïs', [{val: fMais, label:'Référencés'}])}
-      ${createSubCard('Fournisseurs Riz', 'FOURNISSEURS', 'riz', [{val: fRiz, label:'Référencés'}])}
-      ${createSubCard('Fournisseurs Câble', 'FOURNISSEURS', 'câble', [{val: fCable, label:'Référencés'}])}
-      ${createSubCard('Opérateurs Maintenance', 'FOURNISSEURS', 'maintenance', [{val: fOM, label:'Référencés'}])}
-      ${createSubCard('Fabricants de Machines', 'FOURNISSEURS', 'machine', [{val: fMachines, label:'Référencés'}])}
+      ${catCounts.map(x => createCategoryCard(x.c, x.n)).join('')}
+      ${addCategoryCard}
       ${createCard('Projets en recherche', projetsRecherche, 'PROJETS', 'recherche')}
     `;
 
@@ -380,10 +389,10 @@ async function loadDashboard() {
       chartFournisseursInstance = new Chart(ctxFournisseurs, {
         type: 'doughnut',
         data: {
-          labels: ['Soja', 'Blé', 'Maïs', 'Riz', 'Câble', 'Machines', 'Maintenance', 'Autres'],
+          labels: [...catCounts.map(x => x.c.nom), 'Autres'],
           datasets: [{
-            data: [fSoja, fBle, fMais, fRiz, fCable, fMachines, fOM, Math.max(0, totalFournisseurs - (fSoja+fBle+fMais+fRiz+fCable+fMachines+fOM))],
-            backgroundColor: ['#00d2ff', '#2ed573', '#f2c94c', '#ff9f43', '#a29bfe', '#ff4757', '#7f8c8d', '#bdc3c7'],
+            data: [...catCounts.map(x => x.n), fAutres],
+            backgroundColor: [...catPalette(catCounts.length), '#7f8c8d'],
             borderWidth: 0
           }]
         },
@@ -513,13 +522,13 @@ async function loadRelancesView() {
 }
 
 function applyFilter() {
-  const q = document.getElementById('search-input').value.toLowerCase().trim();
+  const q = normTxt(document.getElementById('search-input').value);
   let base = state.indexedData;
   if (state.currentSheet === 'CONTACTS' && state.contactFilter) {
     const iS = getColIndex(state.headers, 'Statut vérification');
     base = base.filter(it => isPendingStatus(it.row[iS]) === (state.contactFilter === 'pending'));
   }
-  state.filteredIndexed = !q ? [...base] : base.filter(item => item.row.some(cell => (cell || '').toString().toLowerCase().includes(q)));
+  state.filteredIndexed = !q ? [...base] : base.filter(item => item.row.some(cell => normTxt(cell).includes(q)));
   state.filteredData = state.filteredIndexed.map(item => item.row);
   state.page = 0; render();
 }
@@ -588,6 +597,89 @@ function generateAutoId(prefix) {
   return `${prefix}-${timestamp}${random}`;
 }
 
+/* ---------- Catégories de fournisseurs : de base + créées par les utilisateurs (partagées via la feuille CATEGORIES) ---------- */
+const DEFAULT_CATEGORIES = [
+  { nom: 'Soja', icon: 'fa-seedling', keys: ['soja'] },
+  { nom: 'Blé', icon: 'fa-wheat-awn', keys: ['ble'] },
+  { nom: 'Maïs', icon: 'fa-corn', keys: ['mais'] },
+  { nom: 'Riz', icon: 'fa-bowl-rice', keys: ['riz'] },
+  { nom: 'Sucre', icon: 'fa-cubes', keys: ['sucre', 'sugar', 'icumsa'] },
+  { nom: 'Câble', icon: 'fa-plug', keys: ['cable'] },
+  { nom: 'Machines', icon: 'fa-gears', keys: ['machine'], title: 'Fabricants de Machines', navLabel: 'Fabricants Machines' },
+  { nom: 'Maintenance', icon: 'fa-wrench', keys: ['maintenance', 'om'], title: 'Opérateurs Maintenance', navLabel: 'Opérateurs Maintenance' }
+];
+const normTxt = s => String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+function catMatches(cat, v) {
+  const t = normTxt(v);
+  if (!t) return false;
+  return cat.keys.some(k => {
+    if (k.length > 3) return t.includes(k);
+    const e = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('(^|[^a-z0-9])' + e + '($|[^a-z0-9])').test(t);
+  });
+}
+const catPalette = n => Array.from({ length: n }, (_, i) => i < DASH_COLORS.length - 1 ? DASH_COLORS[i] : `hsl(${(i * 47) % 360} 70% 60%)`);
+
+async function loadCategories() {
+  let custom = [];
+  try {
+    const v = await sheetsAPI.readSheet(CONFIG.SHEETS.CATEGORIES);
+    custom = (v || []).slice(1).filter(r => r && r[0] && String(r[0]).trim()).map(r => {
+      const ic = String(r[1] || '').trim();
+      return { nom: String(r[0]).trim(), icon: /^fa-[a-z0-9-]+$/.test(ic) ? ic : 'fa-tag', keys: [normTxt(r[0])], custom: true };
+    });
+  } catch (e) { console.warn('Catégories :', e.message); }
+  const seen = new Set(DEFAULT_CATEGORIES.map(c => normTxt(c.nom)));
+  custom = custom.filter(c => { const k = normTxt(c.nom); if (seen.has(k)) return false; seen.add(k); return true; });
+  state.categories = DEFAULT_CATEGORIES.concat(custom);
+  renderCategoryNav();
+}
+
+function renderCategoryNav() {
+  const nav = $id('category-nav');
+  if (!nav) return;
+  nav.innerHTML = (state.categories || DEFAULT_CATEGORIES).map(c =>
+    `<button type="button" class="nav-btn sub-btn" data-cat="${esc(c.nom)}"><i class="fa-solid ${c.icon}"></i> ${esc(c.navLabel || 'Fournisseurs ' + c.nom)}</button>`).join('') +
+    '<button type="button" class="nav-btn sub-btn add-cat-btn" id="add-cat-btn"><i class="fa-solid fa-circle-plus"></i> Nouvelle catégorie</button>';
+  nav.querySelectorAll('[data-cat]').forEach(b => b.addEventListener('click', () => { closeSidebarOnMobile(); openCategory(b.dataset.cat); }));
+  $id('add-cat-btn').addEventListener('click', () => { closeSidebarOnMobile(); openCategoryModal(); });
+}
+function closeSidebarOnMobile() { const sb = $id('sidebar'); if (sb && window.innerWidth <= 768) sb.classList.remove('open'); }
+
+window.openCategory = async function (nom) {
+  await switchSheet('FOURNISSEURS');
+  state.activeCategory = nom;
+  $id('search-input').value = nom;
+  onSearch();
+};
+
+function openCategoryModal(targetSelect) {
+  state.catTarget = targetSelect || null;
+  $id('cat-name').value = '';
+  $id('cat-icon').value = 'fa-tag';
+  $id('category-modal').classList.remove('hidden');
+  setTimeout(() => $id('cat-name').focus(), 60);
+}
+function closeCategoryModal() { $id('category-modal').classList.add('hidden'); state.catTarget = null; }
+
+async function saveCategory() {
+  const nom = $id('cat-name').value.replace(/\s+/g, ' ').trim();
+  const icon = $id('cat-icon').value;
+  if (nom.length < 2 || nom.length > 40) { showToast('Donnez un nom de 2 à 40 caractères', 'error'); return; }
+  if ((state.categories || []).some(c => normTxt(c.nom) === normTxt(nom))) { showToast('Cette catégorie existe déjà', 'error'); return; }
+  const btn = $id('cat-save-btn'); btn.disabled = true;
+  try {
+    await sheetsAPI.appendRow(CONFIG.SHEETS.CATEGORIES, [nom, /^fa-[a-z0-9-]+$/.test(icon) ? icon : 'fa-tag', state.currentUserEmail, new Date().toISOString().slice(0, 10)]);
+    logActivity('FOURNISSEURS', 'Nouvelle catégorie', nom);
+    await loadCategories();
+    if (state.catTarget) setFieldValue(state.catTarget, nom);
+    closeCategoryModal();
+    showToast('✅ Catégorie « ' + nom + ' » créée', 'success');
+    if (state.currentSheet === 'DASHBOARD') reloadCurrent();
+  } catch (e) { showToast('❌ ' + e.message, 'error'); }
+  finally { btn.disabled = false; }
+}
+
 const SUPPLIER_GROUPS = [
   ['Identification du fournisseur', ['ID', 'Entreprise', 'Pays', 'Contact', 'Email', 'Téléphone', 'Site Web', 'Spécialité', 'Catégorie', 'Statut', 'Commentaires', 'Source info', 'Date dernière vérif', 'Statut vérif']],
   ['Équipement et prix', ['Nom équipement', 'Prix indicatif', 'Devise', 'Capacité production']],
@@ -632,7 +724,7 @@ function openModal(sourceIndex) {
       input.innerHTML = `<option value="">-- Choisir --</option>`;
       const options = (state.currentSheet === 'FOURNISSEURS' && SUPPLIER_SELECTS[header]) ? SUPPLIER_SELECTS[header]
         : header === 'Catégorie' 
-        ? ['Soja', 'Blé', 'Maïs', 'Riz', 'Câble', 'Machines', 'Maintenance', 'OM', 'Autre']
+        ? [...(state.categories || DEFAULT_CATEGORIES).map(c => c.nom), 'Autre']
         : header === 'Statut vérification'
         ? ['À vérifier', ...VERIF_CHOICES]
         : header === 'Type acteur'
@@ -659,6 +751,8 @@ function openModal(sourceIndex) {
         const item = state.indexedData.find(it => it.sourceIndex === sourceIndex);
         if (item) setFieldValue(input, item.row[idx] || '');
       }
+    } else if (sourceIndex === null && header === 'Catégorie' && state.currentSheet === 'FOURNISSEURS' && state.activeCategory) {
+      setFieldValue(input, state.activeCategory);
     } else if (sourceIndex === null && header === 'Statut vérification') {
       input.value = 'À vérifier';
     } else if (sourceIndex !== null) {
@@ -666,7 +760,15 @@ function openModal(sourceIndex) {
       if (item) setFieldValue(input, item.row[idx] || '');
     }
     
-    group.appendChild(label); group.appendChild(input); fields.appendChild(group);
+    group.appendChild(label); group.appendChild(input);
+    if (state.currentSheet === 'FOURNISSEURS' && header === 'Catégorie') {
+      const nb = document.createElement('button');
+      nb.type = 'button'; nb.className = 'btn-secondary add-cat-inline';
+      nb.innerHTML = '<i class="fa-solid fa-circle-plus"></i> Nouvelle catégorie';
+      nb.addEventListener('click', () => openCategoryModal(input));
+      group.appendChild(nb);
+    }
+    fields.appendChild(group);
   });
   document.getElementById('modal').classList.remove('hidden');
 }
@@ -782,7 +884,7 @@ async function autoRefresh() {
   if (state.currentSheet === 'COMPARATEUR') return;
   if (!$id('modal').classList.contains('hidden') || !$id('verify-modal').classList.contains('hidden')) return;
   state.silent = true;
-  try { await reloadCurrent(); } catch (e) { console.warn('Actualisation :', e.message); } finally { state.silent = false; }
+  try { await loadCategories(); await reloadCurrent(); } catch (e) { console.warn('Actualisation :', e.message); } finally { state.silent = false; }
 }
 
 /* ---------- Filtres contacts (cartes du tableau de bord) ---------- */
