@@ -422,3 +422,10 @@ select:focus { border-color: #38bdc2 !important; box-shadow: 0 0 10px rgba(56,18
   .hero-text { padding: 18px; }
   .stat-card, .chart-card, .login-box { will-change: auto; }
 }
+
+
+/* ===== Catégories de fournisseurs ===== */
+.add-cat-btn { color: var(--accent) !important; border: 1px dashed rgba(255,255,255,.25) !important; margin-top: 6px; }
+.stat-card.add-card { border-style: dashed; opacity: .9; }
+.stat-card.add-card .stat-value { color: var(--accent); }
+.add-cat-inline { margin-top: 8px; width: auto; align-self: flex-start; font-size: 13px; padding: 8px 12px; }
