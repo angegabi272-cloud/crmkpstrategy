@@ -1,4 +1,4 @@
-const VERSION = 'kp360-v3';
+const VERSION = 'kp360-v4';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'sheets-api.js', 'fin-scene.js', 'logo.png', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
