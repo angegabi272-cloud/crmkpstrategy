@@ -160,9 +160,9 @@ class GoogleSheetsAPI {
     const sid = this.config.SPREADSHEET_ID;
     const names = Object.keys(this.config.SHEETS).map(k => this.config.SHEETS[k]);
     const load = async () => {
-      const r = await this._call(() => gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: 'sheets.properties(sheetId,title)' }));
-      this.sheetIdsCache = {};
-      r.result.sheets.forEach(s => { this.sheetIdsCache[s.properties.title] = s.properties.sheetId; });
+      const r = await this._call(() => gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: 'sheets.properties(sheetId,title,gridProperties(columnCount,rowCount))' }));
+      this.sheetIdsCache = {}; this.gridCols = {};
+      r.result.sheets.forEach(s => { this.sheetIdsCache[s.properties.title] = s.properties.sheetId; this.gridCols[s.properties.title] = (s.properties.gridProperties || {}).columnCount || 0; });
     };
     await load();
     const missing = names.filter(n => this.sheetIdsCache[n] === undefined);
@@ -196,6 +196,16 @@ class GoogleSheetsAPI {
         if (miss.length) data.push({ range: `${n}!${this._col(hdr.length)}1`, values: [miss] });
       }
     });
+    // Agrandit la feuille si les nouvelles colonnes dépassent sa grille (ex. feuille limitée à 40 colonnes)
+    const colIdx = L => L.split('').reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+    const need = {};
+    data.forEach(d => { const m = /^(.*)!([A-Z]+)1$/.exec(d.range); if (!m) return; need[m[1]] = Math.max(need[m[1]] || 0, colIdx(m[2]) - 1 + d.values[0].length); });
+    const grow = Object.keys(need)
+      .filter(n => this.sheetIdsCache[n] !== undefined && this.gridCols[n] && need[n] > this.gridCols[n])
+      .map(n => ({ appendDimension: { sheetId: this.sheetIdsCache[n], dimension: 'COLUMNS', length: need[n] - this.gridCols[n] } }));
+    if (grow.length) {
+      await this._call(() => gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: grow } }));
+    }
     if (data.length) {
       await this._call(() => gapi.client.sheets.spreadsheets.values.batchUpdate({
         spreadsheetId: sid, resource: { valueInputOption: 'RAW', data }
