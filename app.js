@@ -2,7 +2,7 @@ const state = {
   currentSheet: 'DASHBOARD',
   data: [], headers: [], filteredData: [], indexedData: [], filteredIndexed: [],
   page: 0, pageSize: 25, editingRow: null, fournisseursData: [],
-  currentUserEmail: "chargement...", isAdmin: false, contactFilter: null, silent: false, verifyIndex: null, activeCategory: null, catTarget: null, categories: null
+  currentUserEmail: "chargement...", isAdmin: false, contactFilter: null, silent: false, verifyIndex: null, activeCategory: null, catTarget: null, categories: null, statusFilter: 'all', directory: []
 };
 
 const ADMIN_EMAIL = "kpstrategy09@gmail.com";
@@ -224,10 +224,170 @@ async function refreshFournisseursCache() {
         pays: iPays >= 0 ? (row[iPays] || '-') : (row[2] || '-'),
         contact: iContact >= 0 ? (row[iContact] || '-') : (row[3] || '-'),
         prix: iPrix >= 0 ? (row[iPrix] || 'Non renseigné') : (row[11] || 'Non renseigné'),
-        devise: iDevise >= 0 ? (row[iDevise] || '') : '', raw: row, headers: headers
+        devise: iDevise >= 0 ? (row[iDevise] || '') : '', kind: rowStatusKind('FOURNISSEURS', headers, row), raw: row, headers: headers
       }));
     } else { state.fournisseursData = []; }
   } catch (e) { state.fournisseursData = []; }
+}
+
+/* ---------- Signaux Actif / Inactif + associations des projets ---------- */
+const STATUS_SHEETS = {
+  FOURNISSEURS: { name: 'Entreprise', status: ['Statut'] },
+  EPC: { name: 'Nom EPC', status: ['Statut'] },
+  TRADE_FINANCE: { name: 'Nom organisme', status: ['Statut'] },
+  GARANTIES: { name: 'Nom organisme', status: ['Statut'] },
+  INGENIEURS: { name: 'Nom', status: ['Statut', 'Disponibilité'] },
+  CONTACTS: { name: 'Entreprise', status: ['Statut vérification'] },
+  PROJETS: { name: 'Nom Projet', status: ['Statut'], project: true }
+};
+const STATUS_LABELS = { active: 'Actif', inactive: 'Inactif', wait: 'En attente', none: 'Non renseigné' };
+const DOT_EMOJI = { active: '🟢', inactive: '🔴', wait: '🟠', none: '⚪' };
+const KIND_RANK = { active: 0, wait: 1, none: 2, inactive: 3 };
+
+function statusKind(v, isProject) {
+  const s = normTxt(v);
+  if (!s) return 'none';
+  if (isProject) {
+    if (/suspendu|termine|annule|abandon/.test(s)) return 'inactive';
+    if (/attente/.test(s)) return 'wait';
+    return 'active';
+  }
+  if (/inactif|inactive|suspendu|injoignable|invalide|indisponible|non dispo|ferme|radie|^non$/.test(s)) return 'inactive';
+  if (/attente|verifier|negociation|urgent/.test(s)) return 'wait';
+  if (/actif|active|a jour|valide|verifie|disponible|^oui$/.test(s)) return 'active';
+  return 'none';
+}
+function rowStatusKind(sheetKey, headers, row) {
+  const cfg = STATUS_SHEETS[sheetKey];
+  if (!cfg) return null;
+  for (const col of cfg.status) {
+    const i = getColIndex(headers, col);
+    if (i >= 0 && String(row[i] || '').trim()) return statusKind(row[i], cfg.project);
+  }
+  return 'none';
+}
+const statusDot = kind => `<span class="st-dot st-${kind}" title="${STATUS_LABELS[kind]}" role="img" aria-label="${STATUS_LABELS[kind]}"></span>`;
+
+function renderStatusBar(counts) {
+  let bar = $id('status-bar');
+  if (!bar) {
+    const w = document.querySelector('#table-view .table-wrapper');
+    if (!w) return;
+    bar = document.createElement('div'); bar.id = 'status-bar'; bar.className = 'status-bar';
+    w.parentNode.insertBefore(bar, w);
+  }
+  if (!counts) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  const total = counts.active + counts.wait + counts.inactive + counts.none;
+  const btn = (key, label, n, dot) => `<button type="button" class="st-filter${state.statusFilter === key ? ' on' : ''}" data-st="${key}">${dot ? statusDot(dot) : ''}${label} <b>${n}</b></button>`;
+  bar.innerHTML = btn('all', 'Tous', total, '') + btn('active', 'Actifs', counts.active, 'active') + btn('wait', 'En attente', counts.wait, 'wait') + btn('inactive', 'Inactifs', counts.inactive, 'inactive') + (counts.none ? btn('none', 'Non renseignés', counts.none, 'none') : '');
+  bar.querySelectorAll('.st-filter').forEach(b => b.addEventListener('click', () => { state.statusFilter = b.dataset.st; applyFilter(); }));
+}
+
+// Annuaire (fournisseurs, EPC, organismes, ingénieurs) utilisé par les listes déroulantes des projets
+const DIR_SOURCES = {
+  FOURNISSEURS: { label: 'Fournisseur', name: ['Entreprise'], meta: ['Catégorie', 'Pays'], hay: ['Catégorie', 'Spécialité', 'Nom équipement', 'Pays'] },
+  EPC: { label: 'EPC', name: ['Nom EPC'], meta: ['Type', 'Pays'], hay: ['Pays', 'Zone', 'Zones intervention', 'Type', 'Spécialités techniques', 'Références Hôtellerie', 'Références projets'] },
+  TRADE_FINANCE: { label: 'Trade finance', name: ['Nom organisme'], meta: ['Type Trade Finance', 'Pays'], hay: ['Pays', 'Type Trade Finance', 'Produit', 'Secteurs financés'] },
+  GARANTIES: { label: 'Garantie', name: ['Nom organisme'], meta: ['Type garantie', 'Pays'], hay: ['Pays', 'Type garantie', 'Secteurs éligibles'] },
+  INGENIEURS: { label: 'Ingénieur', name: ['Prénom', 'Nom'], meta: ['Spécialité', 'Pays'], hay: ['Spécialité', 'Domaine', 'Compétences', 'Pays', 'Entreprise'] }
+};
+const ASSOC_COLS = {
+  'Financeurs Ciblés': ['TRADE_FINANCE', 'GARANTIES'],
+  'Fournisseurs Associés': ['FOURNISSEURS'],
+  'EPC Associés': ['EPC'],
+  'Ingénieurs Associés': ['INGENIEURS']
+};
+async function loadDirectory() {
+  const keys = Object.keys(DIR_SOURCES);
+  const raw = await sheetsAPI.batchRead(keys.map(k => CONFIG.SHEETS[k]));
+  const items = [];
+  keys.forEach((k, ki) => {
+    const v = raw[ki]; if (!v || v.length < 2) return;
+    const h = v[0], src = DIR_SOURCES[k];
+    v.slice(1).forEach(r => {
+      if (!r.some(c => c)) return;
+      const get = c => { const i = getColIndex(h, c); return i >= 0 ? String(r[i] || '').trim() : ''; };
+      const name = src.name.map(get).filter(Boolean).join(' ');
+      if (!name) return;
+      items.push({ sheet: k, type: src.label, name, kind: rowStatusKind(k, h, r), meta: src.meta.map(get).filter(Boolean).join(' · '), pays: normTxt(get('Pays')), hay: normTxt(src.hay.map(get).join(' ')) });
+    });
+  });
+  state.directory = items;
+  return items;
+}
+const splitAssoc = v => String(v == null ? '' : v).split(/[;\n]+/).map(s => s.trim()).filter(Boolean);
+const dirLookup = n => { const k = normTxt(n); return (state.directory || []).find(i => normTxt(i.name) === k) || null; };
+const assocChipsHtml = v => splitAssoc(v).map(n => { const it = dirLookup(n); return `<span class="assoc-chip">${statusDot(it ? it.kind : 'none')}${esc(n)}</span>`; }).join('');
+
+const ASSOC_STOP = new Set(['pour', 'dans', 'avec', 'projet', 'entre', 'cette', 'leur', 'sont', 'plus', 'sous', 'vers', 'dune', 'unite', 'usine']);
+function assocContext() {
+  const val = h => { const i = getColIndex(state.headers, h); const el = i >= 0 ? $id('field-' + i) : null; return el ? el.value : ''; };
+  const stem = w => w.length > 5 ? w.slice(0, 5) : w;
+  const tokens = [...new Set(normTxt(val('Secteur') + ' ' + val('Nom Projet')).split(/[^a-z0-9]+/).filter(w => w.length >= 4 && !ASSOC_STOP.has(w)).map(stem))];
+  return { tokens, pays: normTxt(val('Pays')) };
+}
+function assocScore(it, ctx) {
+  const hits = ctx.tokens.filter(t => it.hay.includes(t)).length;
+  const paysOk = !!ctx.pays && (it.pays === ctx.pays || it.hay.includes(ctx.pays));
+  return { fit: ctx.tokens.length ? hits > 0 : paysOk, score: hits * 2 + (paysOk ? 1 : 0) };
+}
+
+function buildAssocPicker(input, header) {
+  const types = ASSOC_COLS[header];
+  const wrap = document.createElement('div'); wrap.className = 'assoc-picker';
+  wrap.innerHTML = '<div class="assoc-chips"></div>' +
+    '<button type="button" class="btn-secondary assoc-toggle"><i class="fa-solid fa-list-check"></i> Choisir dans la liste</button>' +
+    '<div class="assoc-panel hidden">' +
+    '<input type="text" class="assoc-search" placeholder="Rechercher…">' +
+    '<label class="assoc-only"><input type="checkbox" class="assoc-onlyfit"> Uniquement ceux qui cadrent avec ce projet (secteur / pays)</label>' +
+    '<div class="assoc-list"></div>' +
+    '<div class="assoc-free"><input type="text" class="assoc-freeinput" placeholder="Autre (saisie libre)"><button type="button" class="btn-secondary assoc-add">Ajouter</button></div></div>';
+  const chipsEl = wrap.querySelector('.assoc-chips'), panel = wrap.querySelector('.assoc-panel'), listEl = wrap.querySelector('.assoc-list');
+  const search = wrap.querySelector('.assoc-search'), onlyFit = wrap.querySelector('.assoc-onlyfit'), free = wrap.querySelector('.assoc-freeinput');
+  const sel = () => splitAssoc(input.value);
+  const has = (arr, n) => arr.some(x => normTxt(x) === normTxt(n));
+  const commit = arr => { input.value = arr.join(' ; '); drawChips(); };
+
+  function drawChips() {
+    chipsEl.innerHTML = sel().map(n => { const it = dirLookup(n); return `<span class="assoc-chip">${statusDot(it ? it.kind : 'none')}${esc(n)}<button type="button" class="assoc-x" data-n="${esc(n)}" title="Retirer">×</button></span>`; }).join('') || '<span class="assoc-empty">Aucune sélection</span>';
+    chipsEl.querySelectorAll('.assoc-x').forEach(b => b.addEventListener('click', () => { commit(sel().filter(x => normTxt(x) !== normTxt(b.dataset.n))); drawList(); }));
+  }
+  function drawList() {
+    const ctx = assocContext(), q = normTxt(search.value), cur = sel();
+    let rows = (state.directory || []).filter(it => types.includes(it.sheet)).map(it => Object.assign({}, it, assocScore(it, ctx)));
+    if (q) rows = rows.filter(r => normTxt(r.name + ' ' + r.meta).includes(q));
+    const total = rows.length;
+    if (onlyFit.checked) rows = rows.filter(r => r.fit || has(cur, r.name));
+    rows.sort((a, b) => (b.score - a.score) || (KIND_RANK[a.kind] - KIND_RANK[b.kind]) || a.name.localeCompare(b.name));
+    if (!rows.length) {
+      listEl.innerHTML = '<div class="assoc-hint">' + (total && onlyFit.checked ? 'Aucun ne cadre avec ce projet : décochez « Uniquement ceux qui cadrent » pour tout voir.' : 'Aucune entrée trouvée. Ajoutez-en dans l’onglet correspondant ou utilisez la saisie libre ci-dessous.') + '</div>';
+      return;
+    }
+    listEl.innerHTML = rows.map(r => `<label class="assoc-opt"><input type="checkbox" data-n="${esc(r.name)}"${has(cur, r.name) ? ' checked' : ''}>${statusDot(r.kind)}<span>${esc(r.name)}</span>${r.fit ? '<span class="assoc-fit">Cadre</span>' : ''}<small>${esc(r.type)}${r.meta ? ' · ' + esc(r.meta) : ''}</small></label>`).join('');
+    listEl.querySelectorAll('input[type=checkbox]').forEach(cb => cb.addEventListener('change', () => {
+      const n = cb.dataset.n, now = sel();
+      commit(cb.checked ? (has(now, n) ? now : now.concat(n)) : now.filter(x => normTxt(x) !== normTxt(n)));
+    }));
+  }
+  let firstOpen = true;
+  wrap.querySelector('.assoc-toggle').addEventListener('click', async () => {
+    panel.classList.toggle('hidden');
+    if (panel.classList.contains('hidden')) return;
+    if (firstOpen) { const c = assocContext(); onlyFit.checked = c.tokens.length > 0 || !!c.pays; firstOpen = false; }
+    listEl.innerHTML = '<div class="assoc-hint">Chargement…</div>';
+    try { await loadDirectory(); } catch (e) { console.warn('Annuaire :', e.message); }
+    drawChips(); drawList();
+  });
+  search.addEventListener('input', drawList);
+  search.addEventListener('keydown', e => { if (e.key === 'Enter') e.preventDefault(); });
+  onlyFit.addEventListener('change', drawList);
+  const addFree = () => { const n = free.value.replace(/[;\n]+/g, ' ').trim(); if (!n) return; const now = sel(); if (!has(now, n)) commit(now.concat(n)); free.value = ''; drawList(); };
+  wrap.querySelector('.assoc-add').addEventListener('click', addFree);
+  free.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addFree(); } });
+  drawChips();
+  loadDirectory().then(drawChips).catch(() => {});
+  return wrap;
 }
 
 async function switchSheet(sheetKey) {
@@ -237,7 +397,7 @@ async function switchSheet(sheetKey) {
   }
 
   state.currentSheet = sheetKey;
-  state.contactFilter = null; state.activeCategory = null; updateFilterChip();
+  state.contactFilter = null; state.activeCategory = null; state.statusFilter = 'all'; updateFilterChip();
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.getAttribute('data-sheet') === sheetKey));
 
   const views = ['dashboard-view', 'table-view', 'comparator-view'];
@@ -488,6 +648,7 @@ async function loadSheet() {
         if (row.some(c => c)) { state.data.push(row); state.indexedData.push({ row, sourceIndex: srcIdx }); }
       });
     }
+    if (state.currentSheet === 'PROJETS') { try { await loadDirectory(); } catch (e) { console.warn('Annuaire :', e.message); } }
     const kp = state.silent ? state.page : 0; applyFilter(); state.page = Math.min(kp, Math.max(0, Math.ceil(state.filteredIndexed.length / state.pageSize) - 1)); render();
   } catch (err) {
     document.getElementById('error-box').textContent = 'Erreur de chargement : ' + err.message;
@@ -528,6 +689,14 @@ function applyFilter() {
     const iS = getColIndex(state.headers, 'Statut vérification');
     base = base.filter(it => isPendingStatus(it.row[iS]) === (state.contactFilter === 'pending'));
   }
+  const sCfg = STATUS_SHEETS[state.currentSheet];
+  let counts = null;
+  if (sCfg) {
+    counts = { active: 0, wait: 0, inactive: 0, none: 0 };
+    base.forEach(it => { counts[rowStatusKind(state.currentSheet, state.headers, it.row)]++; });
+    if (state.statusFilter !== 'all') base = base.filter(it => rowStatusKind(state.currentSheet, state.headers, it.row) === state.statusFilter);
+  }
+  renderStatusBar(counts);
   state.filteredIndexed = !q ? [...base] : base.filter(item => item.row.some(cell => normTxt(cell).includes(q)));
   state.filteredData = state.filteredIndexed.map(item => item.row);
   state.page = 0; render();
@@ -555,8 +724,11 @@ function renderTable() {
     tr.appendChild(td); tbody.appendChild(tr); return;
   }
 
+  const rCfg = STATUS_SHEETS[state.currentSheet];
+  const nameIdx = rCfg ? getColIndex(state.headers, rCfg.name) : -1;
   slice.forEach(({ row, sourceIndex }) => {
     const tr = document.createElement('tr');
+    const rowKind = rCfg ? rowStatusKind(state.currentSheet, state.headers, row) : null;
     state.headers.forEach((header, colIdx) => {
       const td = document.createElement('td');
       let cellValue = row[colIdx] || '';
@@ -566,7 +738,10 @@ function renderTable() {
         else if (lowerVal.includes('terminé') || lowerVal.includes('fait') || lowerVal.includes('validé') || lowerVal.includes('à jour') || lowerVal.includes('vérifié')) td.classList.add('status-valide');
         else if (lowerVal.includes('attente') || lowerVal.includes('moyenne') || lowerVal.includes('à vérifier') || lowerVal.includes('négociation')) td.classList.add('status-attente');
       }
-      td.textContent = cellValue; tr.appendChild(td);
+      if (rCfg && colIdx === nameIdx) td.innerHTML = `<span class="name-cell">${statusDot(rowKind)}${esc(cellValue)}</span>`;
+      else if (state.currentSheet === 'PROJETS' && ASSOC_COLS[header]) { td.innerHTML = assocChipsHtml(cellValue); td.classList.add('assoc-cell'); }
+      else td.textContent = cellValue;
+      tr.appendChild(td);
     });
 
     const tdActions = document.createElement('td'); tdActions.className = 'actions-cell';
@@ -719,7 +894,9 @@ function openModal(sourceIndex) {
     const label = document.createElement('label'); label.textContent = header; label.htmlFor = `field-${idx}`;
     
     let input;
-    if ((state.currentSheet === 'FOURNISSEURS' && SUPPLIER_SELECTS[header]) || header === 'Statut vérification' || header === 'Catégorie' || header === 'Type' || header === 'Type acteur' || header === 'Statut' || header === 'Priorité' || header === 'Type garantie' || header === 'Type organisme') {
+    const isAssoc = state.currentSheet === 'PROJETS' && !!ASSOC_COLS[header];
+    if (isAssoc) { input = document.createElement('input'); input.type = 'hidden'; }
+    else if ((state.currentSheet === 'FOURNISSEURS' && SUPPLIER_SELECTS[header]) || header === 'Statut vérification' || header === 'Catégorie' || header === 'Type' || header === 'Type acteur' || header === 'Statut' || header === 'Priorité' || header === 'Type garantie' || header === 'Type organisme') {
       input = document.createElement('select');
       input.innerHTML = `<option value="">-- Choisir --</option>`;
       const options = (state.currentSheet === 'FOURNISSEURS' && SUPPLIER_SELECTS[header]) ? SUPPLIER_SELECTS[header]
@@ -731,6 +908,8 @@ function openModal(sourceIndex) {
         ? ['Fournisseur', 'Partenaire Financier', 'EPC', 'Ingénieur', 'Organisme de Garantie', 'Client']
         : header === 'Statut' && state.currentSheet === 'PROJETS'
         ? ['En recherche de financement', 'En cours', 'En exécution', 'En attente', 'Terminé', 'Suspendu']
+        : header === 'Statut' && STATUS_SHEETS[state.currentSheet] && state.currentSheet !== 'PROJETS'
+        ? ['Actif', 'Inactif', 'En attente']
         : header === 'Statut' || header === 'Priorité'
         ? ['Actif', 'Inactif', 'En attente', 'Urgent', 'Haute', 'Moyenne', 'Basse', 'Terminé']
         : ['Bancaire', 'Assurance', 'SBLC', 'LC', 'Crédit Documentaire'];
@@ -753,6 +932,8 @@ function openModal(sourceIndex) {
       }
     } else if (sourceIndex === null && header === 'Catégorie' && state.currentSheet === 'FOURNISSEURS' && state.activeCategory) {
       setFieldValue(input, state.activeCategory);
+    } else if (sourceIndex === null && header === 'Statut' && STATUS_SHEETS[state.currentSheet] && state.currentSheet !== 'PROJETS') {
+      input.value = 'Actif';
     } else if (sourceIndex === null && header === 'Statut vérification') {
       input.value = 'À vérifier';
     } else if (sourceIndex !== null) {
@@ -761,6 +942,7 @@ function openModal(sourceIndex) {
     }
     
     group.appendChild(label); group.appendChild(input);
+    if (isAssoc) group.appendChild(buildAssocPicker(input, header));
     if (state.currentSheet === 'FOURNISSEURS' && header === 'Catégorie') {
       const nb = document.createElement('button');
       nb.type = 'button'; nb.className = 'btn-secondary add-cat-inline';
@@ -1472,7 +1654,7 @@ function initComparator() {
     const label = document.createElement('label'); label.textContent = `Fournisseur ${i + 1}`;
     const select = document.createElement('select'); select.id = `compare-select-${i}`;
     select.innerHTML = `<option value="">-- Aucun --</option>`;
-    state.fournisseursData.forEach((f, index) => { select.innerHTML += `<option value="${index}">${esc(f.id)} — ${esc(f.nom)}</option>`; });
+    state.fournisseursData.forEach((f, index) => { select.innerHTML += `<option value="${index}">${DOT_EMOJI[f.kind] || '⚪'} ${esc(f.id)} — ${esc(f.nom)}</option>`; });
     if (comparatorState.selections[i] !== null) select.value = comparatorState.selections[i];
     select.addEventListener('change', (e) => { comparatorState.selections[i] = e.target.value === '' ? null : parseInt(e.target.value);
       Object.keys(comparatorState.notes).forEach(k => { comparatorState.notes[k][i] = null; }); renderComparison(); });
