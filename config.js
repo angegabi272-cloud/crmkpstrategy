@@ -25,18 +25,19 @@ const SCHEMAS = {
   FOURNISSEURS: ['ID', 'Entreprise', 'Pays', 'Contact', 'Email', 'Téléphone', 'Site Web', 'Spécialité', 'Catégorie', 'Statut', 'Commentaires', 'Prix indicatif', 'Devise', 'Nom équipement', 'Capacité production', 'Délai livraison', 'Garantie', 'Pièces détachées', 'Installation', 'Formation', 'SAV', 'Nb conteneurs', 'Conditions paiement', 'Incoterm', 'Certification', 'SBLC', 'Nb camions acheminement', 'Source info', 'Date dernière vérif', 'Statut vérif', 'Note Qualité technique', 'Note Délai', 'Note Garantie', 'Note SAV', 'Note Pièces détachées', 'Note Logistique', 'Note Expérience', 'Note Conditions de paiement', 'LC', 'Note Capacité de production'],
   COMPARATEUR: ['Critère', 'Fournisseur 1', 'Fournisseur 2', 'Fournisseur 3', 'Fournisseur 4', 'Fournisseur 5', 'Pondération', 'Type'],
   ACTUALISATION: ['Contact', 'Entreprise', 'Téléphone', 'Email', 'Site web', 'Dernière vérification', 'Prochaine vérification', 'Jours depuis', 'Statut'],
-  EPC: ['ID', 'Nom EPC', 'Pays', 'Type', 'Zone', 'Références Hôtellerie', 'Capacité', 'Financement', 'Modèle', 'Contact Email', 'Téléphone', 'Site', 'Priorité', 'Spécialités techniques', 'Certifications', 'Zones intervention', 'Références projets', 'Responsable technique'],
+  EPC: ['ID', 'Nom EPC', 'Pays', 'Type', 'Zone', 'Références Hôtellerie', 'Capacité', 'Financement', 'Modèle', 'Contact Email', 'Téléphone', 'Site', 'Priorité', 'Spécialités techniques', 'Certifications', 'Zones intervention', 'Références projets', 'Responsable technique', 'Statut'],
   TRADE_FINANCE: ['ID', 'Nom organisme', 'Pays', 'Type organisme', 'Type Trade Finance', 'Produit', 'Financement import', 'Financement export', 'Crédit documentaire', 'SBLC', 'Contact', 'Email', 'Téléphone', 'Site', 'Statut', 'Secteurs financés', 'Montant min', 'Montant max', 'Devise', 'Conditions éligibilité', 'Garanties exigées', 'Date vérification'],
   GARANTIES: ['ID Garantie', 'Nom organisme', 'Pays', 'Type organisme', 'Type garantie', 'Garantie bancaire', 'SBLC', 'Assurance', 'Montant couvert', 'Contact', 'Email', 'Téléphone', 'Site', 'Statut', 'Secteurs éligibles', 'Conditions', 'Procédure demande'],
   INGENIEURS: ['ID Expert', 'Nom', 'Prénom', 'Entreprise', 'Fonction', 'Spécialité', 'Domaine', 'Pays', 'Ville', 'Téléphone', 'Email', 'Expérience', 'Disponibilité', 'Statut', 'Compétences', 'Certifications'],
   INTERACTIONS: ['ID Interaction', 'Date', 'ID Contact', 'Entreprise', 'Type', 'Canal', 'Objet', 'Résumé', 'Résultat', 'Action suivante', 'Date relance', 'Responsable', 'Statut'],
-  PROJETS: ['ID Projet', 'Nom Projet', 'Pays', 'Secteur', 'Coût Total (FCFA)', 'Besoin Financement', 'Financement Obtenu', 'Statut', 'Prochaine Action', 'Date Limite', 'Promoteur', 'Description', 'Apport Promoteur', 'Montant Restant', 'Financeurs Ciblés', 'Fournisseurs Associés', 'EPC Associés', 'Responsable Interne', 'Historique Échanges', 'Risques & Observations', 'Porteur du projet', 'Entreprise', 'Commentaires'],
+  PROJETS: ['ID Projet', 'Nom Projet', 'Pays', 'Secteur', 'Coût Total (FCFA)', 'Besoin Financement', 'Financement Obtenu', 'Statut', 'Prochaine Action', 'Date Limite', 'Promoteur', 'Description', 'Apport Promoteur', 'Montant Restant', 'Financeurs Ciblés', 'Fournisseurs Associés', 'EPC Associés', 'Responsable Interne', 'Historique Échanges', 'Risques & Observations', 'Porteur du projet', 'Entreprise', 'Commentaires', 'Ingénieurs Associés'],
   RELANCES: ['ID Relance', 'Entreprise', 'Contact', 'Objet', 'Date Prévue', 'Priorité', 'Responsable', 'Statut', 'Projet Associé', 'Type Interaction', 'Date Échange', 'Résultat']
 };
 // Colonnes ajoutées automatiquement à la fin des feuilles déjà existantes (sans toucher aux données).
 // Si la feuille contient déjà la colonne sous un nom voisin (voir SCHEMA_ALIASES), elle est simplement renommée.
 const SCHEMA_ADDITIONS = {
-  PROJETS: ['Porteur du projet', 'Entreprise', 'Commentaires'],
+  EPC: ['Statut'],
+  PROJETS: ['Porteur du projet', 'Entreprise', 'Commentaires', 'Ingénieurs Associés'],
   FOURNISSEURS: ['Nom équipement', 'Prix indicatif', 'Devise', 'Capacité production', 'Délai livraison', 'Garantie', 'Pièces détachées', 'Installation', 'Formation', 'SAV', 'Nb conteneurs', 'Conditions paiement', 'Incoterm', 'Certification', 'SBLC', 'LC', 'Nb camions acheminement',
     'Note Qualité technique', 'Note Délai', 'Note Garantie', 'Note SAV', 'Note Pièces détachées', 'Note Logistique', 'Note Expérience', 'Note Conditions de paiement', 'Note Capacité de production']
 };
