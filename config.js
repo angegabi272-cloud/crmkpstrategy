@@ -59,3 +59,9 @@ const SCHEMA_ALIASES = {
     'Nb camions acheminement': ['Nb camions', "Nb camions d'acheminement", 'Nombre de camions acheminement']
   }
 };
+
+// Lien projets <-> fournisseurs / EPC / organismes / ingénieurs : colonne ajoutée automatiquement
+['FOURNISSEURS', 'EPC', 'TRADE_FINANCE', 'GARANTIES', 'INGENIEURS'].forEach(k => {
+  SCHEMAS[k].push('Projets associés');
+  (SCHEMA_ADDITIONS[k] = SCHEMA_ADDITIONS[k] || []).push('Projets associés');
+});
