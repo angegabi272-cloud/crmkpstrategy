@@ -2,7 +2,7 @@ const state = {
   currentSheet: 'DASHBOARD',
   data: [], headers: [], filteredData: [], indexedData: [], filteredIndexed: [],
   page: 0, pageSize: 25, editingRow: null, fournisseursData: [],
-  currentUserEmail: "chargement...", isAdmin: false, contactFilter: null, silent: false, verifyIndex: null, activeCategory: null, catTarget: null, categories: null, statusFilter: 'all', directory: []
+  currentUserEmail: "chargement...", isAdmin: false, contactFilter: null, silent: false, verifyIndex: null, activeCategory: null, catTarget: null, categories: null, statusFilter: 'all', directory: [], projDir: []
 };
 
 const ADMIN_EMAIL = "kpstrategy09@gmail.com";
@@ -292,6 +292,10 @@ const DIR_SOURCES = {
   GARANTIES: { label: 'Garantie', name: ['Nom organisme'], meta: ['Type garantie', 'Pays'], hay: ['Pays', 'Type garantie', 'Secteurs éligibles'] },
   INGENIEURS: { label: 'Ingénieur', name: ['Prénom', 'Nom'], meta: ['Spécialité', 'Pays'], hay: ['Spécialité', 'Domaine', 'Compétences', 'Pays', 'Entreprise'] }
 };
+const LINK_COL = 'Projets associés';
+const ENTITY_SHEETS = ['FOURNISSEURS', 'EPC', 'TRADE_FINANCE', 'GARANTIES', 'INGENIEURS'];
+const ENTITY_TO_PROJCOL = { FOURNISSEURS: 'Fournisseurs Associés', EPC: 'EPC Associés', TRADE_FINANCE: 'Financeurs Ciblés', GARANTIES: 'Financeurs Ciblés', INGENIEURS: 'Ingénieurs Associés' };
+const SHEET_TITLES = { FOURNISSEURS: 'Fournisseurs', EPC: 'EPC / ingénierie', TRADE_FINANCE: 'Organismes trade finance', GARANTIES: 'Organismes de garantie', INGENIEURS: 'Ingénieurs / experts' };
 const ASSOC_COLS = {
   'Financeurs Ciblés': ['TRADE_FINANCE', 'GARANTIES'],
   'Fournisseurs Associés': ['FOURNISSEURS'],
@@ -320,21 +324,219 @@ const splitAssoc = v => String(v == null ? '' : v).split(/[;\n]+/).map(s => s.tr
 const dirLookup = n => { const k = normTxt(n); return (state.directory || []).find(i => normTxt(i.name) === k) || null; };
 const assocChipsHtml = v => splitAssoc(v).map(n => { const it = dirLookup(n); return `<span class="assoc-chip">${statusDot(it ? it.kind : 'none')}${esc(n)}</span>`; }).join('');
 
-const ASSOC_STOP = new Set(['pour', 'dans', 'avec', 'projet', 'entre', 'cette', 'leur', 'sont', 'plus', 'sous', 'vers', 'dune', 'unite', 'usine']);
-function assocContext() {
-  const val = h => { const i = getColIndex(state.headers, h); const el = i >= 0 ? $id('field-' + i) : null; return el ? el.value : ''; };
+const ASSOC_STOP = new Set(['pour', 'dans', 'avec', 'projet', 'entre', 'cette', 'leur', 'sont', 'plus', 'sous', 'vers', 'dune', 'unite', 'usine', 'les', 'des', 'une', 'sur', 'par', 'aux', 'que', 'qui', 'est', 'ses', 'son', 'nos', 'nom', 'type', 'autre']);
+function tokenize(txt) {
   const stem = w => w.length > 5 ? w.slice(0, 5) : w;
-  const tokens = [...new Set(normTxt(val('Secteur') + ' ' + val('Nom Projet')).split(/[^a-z0-9]+/).filter(w => w.length >= 4 && !ASSOC_STOP.has(w)).map(stem))];
-  return { tokens, pays: normTxt(val('Pays')) };
+  return [...new Set(normTxt(txt).split(/[^a-z0-9]+/).filter(w => w.length >= 3 && !ASSOC_STOP.has(w)).map(stem))];
 }
+function tokHit(hay, t) { return t.length <= 3 ? new RegExp('(^|[^a-z0-9])' + t).test(hay) : hay.includes(t); }
+function fieldVal(h) { const i = getColIndex(state.headers, h); const el = i >= 0 ? $id('field-' + i) : null; return el ? el.value : ''; }
+function assocContext() { return { tokens: tokenize(fieldVal('Secteur') + ' ' + fieldVal('Nom Projet')), pays: normTxt(fieldVal('Pays')) }; }
+const ENT_CTX_FIELDS = ['Catégorie', 'Spécialité', 'Nom équipement', 'Type', 'Type Trade Finance', 'Produit', 'Secteurs financés', 'Secteurs éligibles', 'Domaine', 'Compétences', 'Zones intervention', 'Secteur'];
+function entityContext() { return { tokens: tokenize(ENT_CTX_FIELDS.map(fieldVal).join(' ')), pays: normTxt(fieldVal('Pays')) }; }
 function assocScore(it, ctx) {
-  const hits = ctx.tokens.filter(t => it.hay.includes(t)).length;
+  const hits = ctx.tokens.filter(t => tokHit(it.hay, t)).length;
   const paysOk = !!ctx.pays && (it.pays === ctx.pays || it.hay.includes(ctx.pays));
   return { fit: ctx.tokens.length ? hits > 0 : paysOk, score: hits * 2 + (paysOk ? 1 : 0) };
 }
 
+// Annuaire des projets (pour la liste « Projets associés » des fournisseurs, EPC, organismes, ingénieurs)
+async function loadProjDir() {
+  const v = (await sheetsAPI.batchRead([CONFIG.SHEETS.PROJETS]))[0];
+  const items = [];
+  if (v && v.length > 1) {
+    const h = v[0];
+    v.slice(1).forEach(r => {
+      if (!r.some(c => c)) return;
+      const get = c => { const i = getColIndex(h, c); return i >= 0 ? String(r[i] || '').trim() : ''; };
+      const name = get('Nom Projet'); if (!name) return;
+      items.push({ sheet: 'PROJETS', type: 'Projet', name, kind: statusKind(get('Statut'), true), meta: [get('Secteur'), get('Pays')].filter(Boolean).join(' · '), pays: normTxt(get('Pays')), hay: normTxt([get('Secteur'), get('Nom Projet'), get('Description')].join(' ')) });
+    });
+  }
+  state.projDir = items;
+  return items;
+}
+const projLookup = n => { const k = normTxt(n); return (state.projDir || []).find(i => normTxt(i.name) === k) || null; };
+const projChipsHtml = v => splitAssoc(v).map(n => { const it = projLookup(n); return `<span class="assoc-chip">${statusDot(it ? it.kind : 'none')}${esc(n)}</span>`; }).join('');
+
+// ----- Liens dans les DEUX sens : projet <-> intervenants -----
+const entName = (sk, headers, row) => DIR_SOURCES[sk].name.map(c => { const i = getColIndex(headers, c); return i >= 0 ? String(row[i] || '').trim() : ''; }).filter(Boolean).join(' ');
+const joinAssoc = arr => arr.join(' ; ');
+const addTo = (cur, n) => { const a = splitAssoc(cur); return a.some(x => normTxt(x) === normTxt(n)) ? cur : joinAssoc(a.concat(n)); };
+const removeFrom = (cur, n) => { const a = splitAssoc(cur); const b = a.filter(x => normTxt(x) !== normTxt(n)); return b.length === a.length ? cur : joinAssoc(b); };
+
+// Une fiche (fournisseur, EPC, organisme, ingénieur) vient d'être enregistrée : on met à jour les projets concernés
+async function syncEntityLinks(sk, oldName, newName, oldProj, newProj) {
+  const col = ENTITY_TO_PROJCOL[sk];
+  const all = await sheetsAPI.readSheet(CONFIG.SHEETS.PROJETS, { fresh: true });
+  if (!all || all.length < 2) return;
+  const h = all[0], iN = getColIndex(h, 'Nom Projet'), iC = getColIndex(h, col);
+  if (iN < 0 || iC < 0) return;
+  const want = new Set(newProj.map(normTxt)), had = new Set(oldProj.map(normTxt));
+  const renamed = oldName && normTxt(oldName) !== normTxt(newName);
+  for (const row of all.slice(1)) {
+    const pk = normTxt(row[iN]); if (!pk) continue;
+    const cur = row[iC] || '';
+    let next = cur;
+    if (renamed && had.has(pk)) next = removeFrom(next, oldName);
+    if (want.has(pk)) next = addTo(next, newName);
+    else if (had.has(pk)) next = removeFrom(next, newName);
+    if (next !== cur) await sheetsAPI.patchRow(CONFIG.SHEETS.PROJETS, row, { [col]: next });
+  }
+}
+// Un projet vient d'être enregistré : on met à jour « Projets associés » chez les intervenants choisis ou retirés
+async function syncProjectLinks(oldName, newName, oldVals, newVals) {
+  const renamed = oldName && normTxt(oldName) !== normTxt(newName);
+  for (const sk of ENTITY_SHEETS) {
+    const col = ENTITY_TO_PROJCOL[sk];
+    const had = new Set(splitAssoc(oldVals[col]).map(normTxt)), want = new Set(splitAssoc(newVals[col]).map(normTxt));
+    if (!had.size && !want.size) continue;
+    const all = await sheetsAPI.readSheet(CONFIG.SHEETS[sk], { fresh: true });
+    if (!all || all.length < 2) continue;
+    const h = all[0], iL = getColIndex(h, LINK_COL);
+    if (iL < 0) continue;
+    for (const row of all.slice(1)) {
+      const k = normTxt(entName(sk, h, row)); if (!k) continue;
+      const cur = row[iL] || '';
+      let next = cur;
+      if (want.has(k)) next = addTo(renamed ? removeFrom(cur, oldName) : cur, newName);
+      else if (had.has(k)) next = removeFrom(cur, oldName || newName);
+      if (next !== cur) await sheetsAPI.patchRow(CONFIG.SHEETS[sk], row, { [LINK_COL]: next });
+    }
+  }
+}
+function buildLinkJob(values, prevItem) {
+  const sk = state.currentSheet, headers = state.headers.slice();
+  if (ENTITY_SHEETS.includes(sk)) {
+    const iL = getColIndex(headers, LINK_COL); if (iL < 0) return null;
+    const newName = entName(sk, headers, values), oldName = prevItem ? entName(sk, headers, prevItem.row) : '';
+    const oldP = prevItem ? splitAssoc(prevItem.row[iL]) : [], newP = splitAssoc(values[iL]);
+    if (!newName || (!oldP.length && !newP.length)) return null;
+    return () => syncEntityLinks(sk, oldName, newName, oldP, newP);
+  }
+  if (sk === 'PROJETS') {
+    const iN = getColIndex(headers, 'Nom Projet'); if (iN < 0) return null;
+    const newName = String(values[iN] || '').trim(), oldName = prevItem ? String(prevItem.row[iN] || '').trim() : '';
+    const oldV = {}, newV = {};
+    Object.keys(ASSOC_COLS).forEach(c => { const i = getColIndex(headers, c); oldV[c] = prevItem && i >= 0 ? (prevItem.row[i] || '') : ''; newV[c] = i >= 0 ? (values[i] || '') : ''; });
+    return () => syncProjectLinks(oldName, newName, oldV, newV);
+  }
+  return null;
+}
+function buildUnlinkJob(item) {
+  const sk = state.currentSheet, headers = state.headers.slice();
+  if (ENTITY_SHEETS.includes(sk)) {
+    const iL = getColIndex(headers, LINK_COL); if (iL < 0) return null;
+    const name = entName(sk, headers, item.row), oldP = splitAssoc(item.row[iL]);
+    if (!name || !oldP.length) return null;
+    return () => syncEntityLinks(sk, name, name, oldP, []);
+  }
+  if (sk === 'PROJETS') {
+    const iN = getColIndex(headers, 'Nom Projet'); if (iN < 0) return null;
+    const name = String(item.row[iN] || '').trim(); if (!name) return null;
+    const oldV = {}, newV = {};
+    Object.keys(ASSOC_COLS).forEach(c => { const i = getColIndex(headers, c); oldV[c] = i >= 0 ? (item.row[i] || '') : ''; newV[c] = ''; });
+    return () => syncProjectLinks(name, name, oldV, newV);
+  }
+  return null;
+}
+
+// ----- Propositions automatiques à la création d'un projet -----
+function buildSuggestBlock() {
+  const box = document.createElement('div'); box.className = 'sug-box'; box.id = 'proj-suggest';
+  const head = '<div class="form-section-title">💡 Propositions de l’application</div><div class="sug-sub">Selon le nom, le secteur et le pays du projet : cliquez sur « Ajouter » pour les rattacher au projet.</div>';
+  const render = async () => {
+    if (!box.isConnected) return;
+    try { await loadDirectory(); } catch (e) { console.warn('Annuaire :', e.message); }
+    const ctx = assocContext();
+    if (!ctx.tokens.length && !ctx.pays) { box.innerHTML = head + '<div class="assoc-hint">Renseignez le nom, le secteur ou le pays du projet : les fournisseurs, EPC, organismes et ingénieurs qui cadrent apparaîtront ici.</div>'; return; }
+    const chosen = {};
+    Object.keys(ASSOC_COLS).forEach(h => { const i = getColIndex(state.headers, h); const el = i >= 0 ? $id('field-' + i) : null; chosen[h] = new Set(splitAssoc(el ? el.value : '').map(normTxt)); });
+    const rows = (state.directory || []).map(it => Object.assign({}, it, assocScore(it, ctx)))
+      .filter(r => r.fit && r.kind !== 'inactive' && !chosen[ENTITY_TO_PROJCOL[r.sheet]].has(normTxt(r.name)));
+    const shown = [];
+    let html = head;
+    ENTITY_SHEETS.forEach(sk => {
+      const list = rows.filter(r => r.sheet === sk).sort((x, y) => (y.score - x.score) || (KIND_RANK[x.kind] - KIND_RANK[y.kind]) || x.name.localeCompare(y.name)).slice(0, 5);
+      if (!list.length) return;
+      html += `<div class="sug-group">${esc(SHEET_TITLES[sk])}</div>`;
+      list.forEach(r => { shown.push(r); html += `<div class="sug-row">${statusDot(r.kind)}<span>${esc(r.name)}</span><small>${esc(r.meta)}</small><button type="button" class="btn-secondary sug-add" data-i="${shown.length - 1}">+ Ajouter</button></div>`; });
+    });
+    if (!shown.length) html += '<div class="assoc-hint">Aucune proposition pour le moment : aucun intervenant actif de la base ne correspond à ce secteur / pays.</div>';
+    box.innerHTML = html;
+    box.querySelectorAll('.sug-add').forEach(b => b.addEventListener('click', () => {
+      const r = shown[parseInt(b.dataset.i)]; if (!r) return;
+      const el = $id('field-' + getColIndex(state.headers, ENTITY_TO_PROJCOL[r.sheet]));
+      if (el && el._assocAdd) { el._assocAdd(r.name); render(); }
+    }));
+  };
+  let t = null; const later = () => { clearTimeout(t); t = setTimeout(render, 400); };
+  const f = $id('form-fields'); f.oninput = later; f.onchange = later;
+  box.innerHTML = head + '<div class="assoc-hint">Chargement…</div>';
+  setTimeout(render, 0);
+  return box;
+}
+
+// ----- Fiche d'un projet : tout ce qui est rattaché au projet -----
+async function openProjectSheet(sourceIndex) {
+  const item = state.indexedData.find(it => it.sourceIndex === sourceIndex); if (!item) return;
+  const H = state.headers.slice(), row = item.row;
+  const val = h => { const i = getColIndex(H, h); return i >= 0 ? String(row[i] || '').trim() : ''; };
+  const pName = val('Nom Projet'), pKey = normTxt(pName);
+  let modal = $id('fiche-modal');
+  if (!modal) {
+    modal = document.createElement('div'); modal.id = 'fiche-modal'; modal.className = 'modal hidden';
+    modal.innerHTML = '<div class="modal-content glass-panel fiche-content"><div class="modal-header"><h3 id="fiche-title"></h3><button type="button" id="fiche-close" class="btn-close"><i class="fa-solid fa-xmark"></i></button></div><div id="fiche-body" class="fiche-body"></div></div>';
+    document.body.appendChild(modal);
+    const close = () => modal.classList.add('hidden');
+    $id('fiche-close').addEventListener('click', close);
+    modal.addEventListener('click', e => { if (e.target === modal) close(); });
+  }
+  $id('fiche-title').innerHTML = `<span class="name-cell">${statusDot(statusKind(val('Statut'), true))}${esc(pName || 'Projet')}</span>`;
+  $id('fiche-body').innerHTML = '<div class="assoc-hint">Chargement…</div>';
+  modal.classList.remove('hidden');
+  let raw = [];
+  try { raw = await sheetsAPI.batchRead(ENTITY_SHEETS.map(k => CONFIG.SHEETS[k]), { fresh: true }); } catch (e) { $id('fiche-body').innerHTML = '<div class="error">Erreur : ' + esc(e.message) + '</div>'; return; }
+  const counts = { active: 0, wait: 0, inactive: 0, none: 0 };
+  const foundByCol = {};
+  const groups = ENTITY_SHEETS.map((sk, si) => {
+    const v = raw[si] || [], h = v[0] || [], col = ENTITY_TO_PROJCOL[sk];
+    const named = new Set(splitAssoc(val(col)).map(normTxt));
+    const iL = getColIndex(h, LINK_COL);
+    const list = [];
+    v.slice(1).forEach(r => {
+      if (!r.some(c => c)) return;
+      const name = entName(sk, h, r), k = normTxt(name); if (!k) return;
+      const linked = named.has(k) || (iL >= 0 && splitAssoc(r[iL]).some(x => normTxt(x) === pKey));
+      if (!linked) return;
+      (foundByCol[col] = foundByCol[col] || new Set()).add(k);
+      const g = c => { const i = getColIndex(h, c); return i >= 0 ? String(r[i] || '').trim() : ''; };
+      const kind = rowStatusKind(sk, h, r); counts[kind]++;
+      list.push({ name, kind, info: [g('Pays'), g('Contact') || g('Entreprise'), g('Email'), g('Téléphone')].filter(Boolean).join(' · ') });
+    });
+    return { sk, list };
+  });
+  const freeNames = [];
+  Object.keys(ASSOC_COLS).forEach(col => splitAssoc(val(col)).forEach(n => { if (!(foundByCol[col] && foundByCol[col].has(normTxt(n)))) freeNames.push(n); }));
+  const total = groups.reduce((n, g) => n + g.list.length, 0) + freeNames.length;
+  let html = '';
+  H.forEach((h, i) => { if (ASSOC_COLS[h]) return; const x = String(row[i] || '').trim(); if (x) html += `<div class="fiche-row"><b>${esc(h)}</b><span>${esc(x)}</span></div>`; });
+  html += `<div class="fiche-sum"><b>${total}</b> intervenant(s) rattaché(s) à ce projet — ${statusDot('active')}${counts.active} actif(s) · ${statusDot('wait')}${counts.wait} en attente · ${statusDot('inactive')}${counts.inactive} inactif(s)${counts.none ? ' · ' + statusDot('none') + counts.none + ' non renseigné(s)' : ''}</div>`;
+  groups.forEach(g => {
+    html += `<div class="fiche-group"><h4>${esc(SHEET_TITLES[g.sk])} (${g.list.length})</h4>`;
+    html += g.list.length ? g.list.map(x => `<div class="fiche-item">${statusDot(x.kind)}<b>${esc(x.name)}</b><small>${esc(x.info)}</small></div>`).join('') : '<div class="fiche-empty">Aucun pour le moment</div>';
+    html += '</div>';
+  });
+  if (freeNames.length) html += `<div class="fiche-group"><h4>Autres (saisie libre)</h4>${freeNames.map(n => `<div class="fiche-item">${statusDot('none')}<b>${esc(n)}</b></div>`).join('')}</div>`;
+  html += '<div style="margin-top:18px;text-align:right"><button type="button" class="btn-secondary" id="fiche-edit"><i class="fa-solid fa-pen-to-square"></i> Modifier le projet</button></div>';
+  $id('fiche-body').innerHTML = html;
+  $id('fiche-edit').addEventListener('click', () => { modal.classList.add('hidden'); openModal(sourceIndex); });
+}
+
 function buildAssocPicker(input, header) {
-  const types = ASSOC_COLS[header];
+  const projMode = header === LINK_COL;
+  const types = projMode ? null : ASSOC_COLS[header];
+  const ctxFn = () => projMode ? entityContext() : assocContext();
   const wrap = document.createElement('div'); wrap.className = 'assoc-picker';
   wrap.innerHTML = '<div class="assoc-chips"></div>' +
     '<button type="button" class="btn-secondary assoc-toggle"><i class="fa-solid fa-list-check"></i> Choisir dans la liste</button>' +
@@ -350,12 +552,12 @@ function buildAssocPicker(input, header) {
   const commit = arr => { input.value = arr.join(' ; '); drawChips(); };
 
   function drawChips() {
-    chipsEl.innerHTML = sel().map(n => { const it = dirLookup(n); return `<span class="assoc-chip">${statusDot(it ? it.kind : 'none')}${esc(n)}<button type="button" class="assoc-x" data-n="${esc(n)}" title="Retirer">×</button></span>`; }).join('') || '<span class="assoc-empty">Aucune sélection</span>';
+    chipsEl.innerHTML = sel().map(n => { const it = projMode ? projLookup(n) : dirLookup(n); return `<span class="assoc-chip">${statusDot(it ? it.kind : 'none')}${esc(n)}<button type="button" class="assoc-x" data-n="${esc(n)}" title="Retirer">×</button></span>`; }).join('') || '<span class="assoc-empty">Aucune sélection</span>';
     chipsEl.querySelectorAll('.assoc-x').forEach(b => b.addEventListener('click', () => { commit(sel().filter(x => normTxt(x) !== normTxt(b.dataset.n))); drawList(); }));
   }
   function drawList() {
-    const ctx = assocContext(), q = normTxt(search.value), cur = sel();
-    let rows = (state.directory || []).filter(it => types.includes(it.sheet)).map(it => Object.assign({}, it, assocScore(it, ctx)));
+    const ctx = ctxFn(), q = normTxt(search.value), cur = sel();
+    let rows = (projMode ? (state.projDir || []) : (state.directory || []).filter(it => types.includes(it.sheet))).map(it => Object.assign({}, it, assocScore(it, ctx)));
     if (q) rows = rows.filter(r => normTxt(r.name + ' ' + r.meta).includes(q));
     const total = rows.length;
     if (onlyFit.checked) rows = rows.filter(r => r.fit || has(cur, r.name));
@@ -374,9 +576,9 @@ function buildAssocPicker(input, header) {
   wrap.querySelector('.assoc-toggle').addEventListener('click', async () => {
     panel.classList.toggle('hidden');
     if (panel.classList.contains('hidden')) return;
-    if (firstOpen) { const c = assocContext(); onlyFit.checked = c.tokens.length > 0 || !!c.pays; firstOpen = false; }
+    if (firstOpen) { const c = ctxFn(); onlyFit.checked = c.tokens.length > 0 || !!c.pays; firstOpen = false; }
     listEl.innerHTML = '<div class="assoc-hint">Chargement…</div>';
-    try { await loadDirectory(); } catch (e) { console.warn('Annuaire :', e.message); }
+    try { await (projMode ? loadProjDir() : loadDirectory()); } catch (e) { console.warn('Annuaire :', e.message); }
     drawChips(); drawList();
   });
   search.addEventListener('input', drawList);
@@ -385,8 +587,14 @@ function buildAssocPicker(input, header) {
   const addFree = () => { const n = free.value.replace(/[;\n]+/g, ' ').trim(); if (!n) return; const now = sel(); if (!has(now, n)) commit(now.concat(n)); free.value = ''; drawList(); };
   wrap.querySelector('.assoc-add').addEventListener('click', addFree);
   free.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addFree(); } });
+  if (projMode) {
+    wrap.querySelector('.assoc-toggle').innerHTML = '<i class="fa-solid fa-diagram-project"></i> Choisir les projets';
+    wrap.querySelector('.assoc-only').lastChild.textContent = ' Uniquement les projets qui cadrent avec cette fiche (secteur / pays)';
+    free.placeholder = 'Autre projet (saisie libre)';
+  }
+  input._assocAdd = n => { const now = sel(); if (!has(now, n)) commit(now.concat(n)); };
   drawChips();
-  loadDirectory().then(drawChips).catch(() => {});
+  (projMode ? loadProjDir() : loadDirectory()).then(drawChips).catch(() => {});
   return wrap;
 }
 
@@ -648,7 +856,7 @@ async function loadSheet() {
         if (row.some(c => c)) { state.data.push(row); state.indexedData.push({ row, sourceIndex: srcIdx }); }
       });
     }
-    if (state.currentSheet === 'PROJETS') { try { await loadDirectory(); } catch (e) { console.warn('Annuaire :', e.message); } }
+    if (state.currentSheet === 'PROJETS' || ENTITY_SHEETS.includes(state.currentSheet)) { try { await (state.currentSheet === 'PROJETS' ? loadDirectory() : loadProjDir()); } catch (e) { console.warn('Annuaire :', e.message); } }
     const kp = state.silent ? state.page : 0; applyFilter(); state.page = Math.min(kp, Math.max(0, Math.ceil(state.filteredIndexed.length / state.pageSize) - 1)); render();
   } catch (err) {
     document.getElementById('error-box').textContent = 'Erreur de chargement : ' + err.message;
@@ -740,17 +948,19 @@ function renderTable() {
       }
       if (rCfg && colIdx === nameIdx) td.innerHTML = `<span class="name-cell">${statusDot(rowKind)}${esc(cellValue)}</span>`;
       else if (state.currentSheet === 'PROJETS' && ASSOC_COLS[header]) { td.innerHTML = assocChipsHtml(cellValue); td.classList.add('assoc-cell'); }
+      else if (ENTITY_SHEETS.includes(state.currentSheet) && header === LINK_COL) { td.innerHTML = projChipsHtml(cellValue); td.classList.add('assoc-cell'); }
       else td.textContent = cellValue;
       tr.appendChild(td);
     });
 
     const tdActions = document.createElement('td'); tdActions.className = 'actions-cell';
-    tdActions.innerHTML = (state.currentSheet === 'CONTACTS' ? `<button class="verify-btn" title="Vérifier ce contact" data-index="${sourceIndex}"><i class="fa-solid fa-circle-check"></i></button>` : '') + `<button class="edit-btn" title="Modifier" data-index="${sourceIndex}"><i class="fa-solid fa-pen-to-square"></i></button><button class="delete-btn" title="Supprimer" data-index="${sourceIndex}"><i class="fa-solid fa-trash"></i></button>`;
+    tdActions.innerHTML = (state.currentSheet === 'PROJETS' ? `<button class="fiche-btn" title="Fiche du projet : tous les intervenants" data-index="${sourceIndex}"><i class="fa-solid fa-folder-open"></i></button>` : '') + (state.currentSheet === 'CONTACTS' ? `<button class="verify-btn" title="Vérifier ce contact" data-index="${sourceIndex}"><i class="fa-solid fa-circle-check"></i></button>` : '') + `<button class="edit-btn" title="Modifier" data-index="${sourceIndex}"><i class="fa-solid fa-pen-to-square"></i></button><button class="delete-btn" title="Supprimer" data-index="${sourceIndex}"><i class="fa-solid fa-trash"></i></button>`;
     tr.appendChild(tdActions); tbody.appendChild(tr);
   });
 
   tbody.querySelectorAll('.edit-btn').forEach(btn => btn.addEventListener('click', () => openModal(parseInt(btn.dataset.index))));
   tbody.querySelectorAll('.verify-btn').forEach(btn => btn.addEventListener('click', () => openVerifyModal(parseInt(btn.dataset.index))));
+  tbody.querySelectorAll('.fiche-btn').forEach(btn => btn.addEventListener('click', () => openProjectSheet(parseInt(btn.dataset.index))));
   tbody.querySelectorAll('.delete-btn').forEach(btn => btn.addEventListener('click', () => onDelete(parseInt(btn.dataset.index))));
 }
 
@@ -857,6 +1067,7 @@ async function saveCategory() {
 
 const SUPPLIER_GROUPS = [
   ['Identification du fournisseur', ['ID', 'Entreprise', 'Pays', 'Contact', 'Email', 'Téléphone', 'Site Web', 'Spécialité', 'Catégorie', 'Statut', 'Commentaires', 'Source info', 'Date dernière vérif', 'Statut vérif']],
+  ['Projets concernés', ['Projets associés']],
   ['Équipement et prix', ['Nom équipement', 'Prix indicatif', 'Devise', 'Capacité production']],
   ['Livraison et logistique', ['Délai livraison', 'Nb conteneurs', 'Nb camions acheminement', 'Incoterm']],
   ['Garanties et services', ['Garantie', 'Pièces détachées', 'Installation', 'Formation', 'SAV', 'Certification']],
@@ -886,15 +1097,15 @@ function openModal(sourceIndex) {
 
   const idPrefix = state.currentSheet === 'FOURNISSEURS' ? 'F' : state.currentSheet === 'CONTACTS' ? 'C' : state.currentSheet === 'PROJETS' ? 'P' : 'ID';
 
-  const order = state.currentSheet === 'FOURNISSEURS' ? supplierFieldOrder(state.headers) : state.headers.map((h, i) => ({ h, i, g: null }));
-  let lastGroup = null;
+  const order = state.currentSheet === 'FOURNISSEURS' ? supplierFieldOrder(state.headers) : state.headers.map((h, i) => ({ h, i, g: (ENTITY_SHEETS.includes(state.currentSheet) && h === LINK_COL) ? 'Projets concernés' : null }));
+  let lastGroup = null; let sugDone = false;
   order.forEach(({ h: header, i: idx, g: grp }) => {
     if (grp && grp !== lastGroup) { const t = document.createElement('div'); t.className = 'form-section-title'; t.textContent = grp; fields.appendChild(t); lastGroup = grp; }
     const group = document.createElement('div'); group.className = 'form-group';
     const label = document.createElement('label'); label.textContent = header; label.htmlFor = `field-${idx}`;
     
     let input;
-    const isAssoc = state.currentSheet === 'PROJETS' && !!ASSOC_COLS[header];
+    const isAssoc = (state.currentSheet === 'PROJETS' && !!ASSOC_COLS[header]) || (ENTITY_SHEETS.includes(state.currentSheet) && header === LINK_COL);
     if (isAssoc) { input = document.createElement('input'); input.type = 'hidden'; }
     else if ((state.currentSheet === 'FOURNISSEURS' && SUPPLIER_SELECTS[header]) || header === 'Statut vérification' || header === 'Catégorie' || header === 'Type' || header === 'Type acteur' || header === 'Statut' || header === 'Priorité' || header === 'Type garantie' || header === 'Type organisme') {
       input = document.createElement('select');
@@ -942,6 +1153,7 @@ function openModal(sourceIndex) {
     }
     
     group.appendChild(label); group.appendChild(input);
+    if (isAssoc && state.currentSheet === 'PROJETS' && !sugDone) { fields.appendChild(buildSuggestBlock()); sugDone = true; }
     if (isAssoc) group.appendChild(buildAssocPicker(input, header));
     if (state.currentSheet === 'FOURNISSEURS' && header === 'Catégorie') {
       const nb = document.createElement('button');
@@ -978,6 +1190,7 @@ async function onSave(e) {
   });
   const actionType = state.editingRow === null ? 'Ajout' : 'Modification';
   const prevItem = state.editingRow === null ? null : state.indexedData.find(it => it.sourceIndex === state.editingRow);
+  const linkJob = buildLinkJob(values, prevItem);
   if (state.currentSheet === 'CONTACTS') {
     const iS = getColIndex(state.headers, 'Statut vérification'), iD = getColIndex(state.headers, 'Date dernière vérif');
     const wasPending = !prevItem || isPendingStatus(prevItem.row[iS]);
@@ -1009,6 +1222,7 @@ async function onSave(e) {
 
     setTimeout(async () => {
       try {
+        if (linkJob) { try { await linkJob(); } catch (e) { console.warn('Liens projets :', e.message); showToast('⚠️ Liens projets non synchronisés : ' + e.message, 'error'); } }
         await logActivity(state.currentSheet, actionType, values[1] || values[0] || 'Ligne sans nom');
         const modulesToSync = ['FOURNISSEURS', 'EPC', 'TRADE_FINANCE', 'GARANTIES'];
         if (modulesToSync.includes(state.currentSheet)) {
@@ -1040,6 +1254,8 @@ async function onDelete(sourceIndex) {
     const itemName = item ? (item.row[1] || item.row[0] || 'Inconnu') : 'Inconnu';
     if (!item) throw new Error('Ligne introuvable');
     await sheetsAPI.deleteRowByMatch(sheetName, item.row);
+    const unlinkJob = buildUnlinkJob(item);
+    if (unlinkJob) { try { await unlinkJob(); } catch (e) { console.warn('Liens projets :', e.message); } }
     showToast('🗑️ Entrée supprimée', 'success');
     await logActivity(state.currentSheet, 'Suppression', itemName);
     if (state.currentSheet === 'FOURNISSEURS') await refreshFournisseursCache();
