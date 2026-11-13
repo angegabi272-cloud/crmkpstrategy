@@ -467,3 +467,23 @@ select:focus { border-color: #38bdc2 !important; box-shadow: 0 0 10px rgba(56,18
 .assoc-free { display: flex; gap: 8px; margin-top: 8px; }
 .assoc-cell { min-width: 220px; }
 .assoc-cell .assoc-chip { margin: 2px 4px 2px 0; }
+
+
+/* ===== Propositions automatiques + fiche projet ===== */
+.sug-box { margin: 14px 0; padding: 12px 14px; border: 1px dashed rgba(0,210,255,.45); border-radius: 12px; background: rgba(0,210,255,.05); }
+.sug-sub { font-size: 12px; opacity: .65; margin: 4px 0 8px; }
+.sug-group { margin-top: 10px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; opacity: .85; }
+.sug-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 4px; font-size: 14px; }
+.sug-row small { opacity: .6; margin-left: auto; font-size: 11px; }
+.sug-add { padding: 4px 10px !important; font-size: 12px !important; }
+.actions-cell .fiche-btn:hover { background: rgba(255,165,2,.15); color: #ffa502; }
+.fiche-content { max-width: 780px !important; }
+.fiche-body { overflow: auto; padding: 20px 24px; }
+.fiche-row { display: flex; flex-wrap: wrap; gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,.06); font-size: 14px; }
+.fiche-row b { min-width: 170px; font-size: 12px; text-transform: uppercase; color: var(--primary); letter-spacing: .04em; }
+.fiche-row span { flex: 1; min-width: 160px; white-space: pre-wrap; }
+.fiche-sum { margin: 16px 0 4px; padding: 10px 14px; border-radius: 10px; background: rgba(255,255,255,.05); font-size: 14px; }
+.fiche-group h4 { margin: 18px 0 8px; font-size: 14px; }
+.fiche-item { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.04); margin-bottom: 6px; font-size: 14px; }
+.fiche-item small { opacity: .65; }
+.fiche-empty { font-size: 13px; opacity: .55; padding: 2px 4px; }
