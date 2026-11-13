@@ -1,4 +1,4 @@
-const VERSION = 'kp360-v5';
+const VERSION = 'kp360-v6';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'sheets-api.js', 'fin-scene.js', 'logo.png', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -12,7 +12,7 @@ self.addEventListener('fetch', e => {
   const r = e.request;
   if (r.method !== 'GET' || new URL(r.url).origin !== location.origin) return;
   e.respondWith(
-    fetch(r).then(res => {
+    fetch(r, { cache: 'no-cache' }).then(res => {
       if (res.ok) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(r, copy)); }
       return res;
     }).catch(() => caches.match(r).then(m => m || caches.match('index.html')))
